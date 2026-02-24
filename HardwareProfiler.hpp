@@ -17,14 +17,14 @@ public:
         memcpy(vendor + 8, &cpuInfo[2], 4);
         vendor[12] = '\0';
 
-        // EAX = 1: Feature Bits — Hypervisor bit (ECX bit 31)
+        // EAX = 1: Feature Bits  Hypervisor bit (ECX bit 31)
         __cpuid(cpuInfo, 1);
         bool isVM = (cpuInfo[2] >> 31) & 1;
 
         if (isVM) {
             // EAX = 0x40000000: Hypervisor Vendor
             __cpuid(cpuInfo, 0x40000000);
-            // Silently note — real AC would log this server-side
+            // Silently note  real AC would log this server-side
         }
     }
 };

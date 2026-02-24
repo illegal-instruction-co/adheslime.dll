@@ -49,7 +49,7 @@ struct XorStr final {
 
 #define X(s) []{ constexpr XorStr<(sizeof(s))> res(s); return res.Decrypt(); }()
 
-// --- BANNED Screen (generic — no detection details) ---
+// --- BANNED Screen (generic  no detection details) ---
 static void ShowBannedScreen(uint32_t code) {
     // Check if we have a console (child processes may not)
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -85,7 +85,7 @@ static void TriggerBan(uint32_t code) {
     ShowBannedScreen(code);
 }
 
-// Ban codes (opaque — don't reveal detection type)
+// Ban codes (opaque  don't reveal detection type)
 enum BanCode : uint32_t {
     BC_DEBUGGER_LATENCY  = 0xA001,
     BC_TIMING_ANOMALY    = 0xA002,
@@ -190,10 +190,32 @@ private:
         CONTEXT ctx;
         ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_CONTROL;
         if (GetThreadContext(hThread, &ctx)) {
-            if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0) TriggerBan(BC_HWBP_DETECTED);
+            bool modified = false;
+
+            // Check and CLEAR hardware breakpoints (adhesive pattern)
+            if (ctx.Dr0 != 0 || ctx.Dr1 != 0 || ctx.Dr2 != 0 || ctx.Dr3 != 0) {
+                ctx.Dr0 = ctx.Dr1 = ctx.Dr2 = ctx.Dr3 = 0;
+                ctx.Dr7 = 0;
+                modified = true;
+                TriggerBan(BC_HWBP_DETECTED);
+            }
+
+            // Check if RIP is within a known module  if not, correct it
             bool inModule = false;
-            for (const auto& bound : moduleBounds) if (ctx.Rip >= bound.first && ctx.Rip < bound.second) inModule = true;
-            if (!inModule) TriggerBan(BC_EXTERN_EXEC);
+            DWORD64 nearestBase = 0;
+            for (const auto& bound : moduleBounds) {
+                if (ctx.Rip >= bound.first && ctx.Rip < bound.second) { inModule = true; break; }
+                if (nearestBase == 0) nearestBase = bound.first;
+            }
+            if (!inModule && nearestBase != 0) {
+                // Thread RIP hijacked  redirect back to module base (adhesive correction pattern)
+                ctx.Rip = nearestBase;
+                modified = true;
+                TriggerBan(BC_EXTERN_EXEC);
+            }
+
+            // Apply corrections via SetThreadContext
+            if (modified) SetThreadContext(hThread, &ctx);
         }
         ResumeThread(hThread);
         CloseHandle(hThread);
@@ -258,7 +280,7 @@ class TelemetryService final {
 public:
     static void SendHeartbeat(bool integrityOk) {
         if (!integrityOk) TriggerBan(BC_HEARTBEAT_FAIL);
-        // Silent — no console output
+        // Silent  no console output
     }
 };
 
@@ -290,7 +312,7 @@ public:
 // --- Dispatch Table ---
 typedef void (*pDetectionFunc)();
 
-// Dedicated read-only section — VirtualProtect changes are detectable by watchdog
+// Dedicated read-only section  VirtualProtect changes are detectable by watchdog
 #pragma section(".adhdata", read)
 __declspec(allocate(".adhdata")) static pDetectionFunc detectionDispatch[] = {
     AntiDebug::CheckIsDebuggerPresent,
@@ -408,7 +430,7 @@ extern "C" __declspec(dllexport) void StartBackgroundDetection() {
 
 extern "C" __declspec(dllexport) void TriggerSelfTamper() {
     DWORD oldProtect;
-    // Use PAGE_EXECUTE_READWRITE (0x40) — guaranteed to differ from any initial protection
+    // Use PAGE_EXECUTE_READWRITE (0x40)  guaranteed to differ from any initial protection
     VirtualProtect((void*)detectionDispatch, sizeof(detectionDispatch), PAGE_EXECUTE_READWRITE, &oldProtect);
 }
 
@@ -416,7 +438,7 @@ extern "C" __declspec(dllexport) void TriggerSelfTamper() {
 #pragma section(".CRT$XLB", read)
 static void NTAPI TlsCallback(PVOID hModule, DWORD reason, PVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
-        // Early anti-debug check — runs before DllMain
+        // Early anti-debug check  runs before DllMain
         if (IsDebuggerPresent()) TriggerBan(BC_DEBUGGER_PRESENT);
     }
 }
