@@ -1,0 +1,35 @@
+# Build
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+
+# MSVC
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.idb
+*.suo
+*.user
+*.sln
+*.vcxproj*
+x64/
+Debug/
+Release/
+.vs/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp
+*~
