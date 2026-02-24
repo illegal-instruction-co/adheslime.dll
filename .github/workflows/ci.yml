@@ -1,0 +1,63 @@
+name: Build, Test & Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build (Release)
+        run: cmake --build build --config Release
+
+      - name: Run Tests
+        working-directory: build/Release
+        run: |
+          Write-Host "=== Running Adheslime Test Suite ==="
+          ./tester.exe
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Tests failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+          Write-Host "All tests passed."
+
+      - name: Generate Version Tag
+        id: version
+        run: |
+          $date = Get-Date -Format "yyyy.MM.dd"
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          $run = "${{ github.run_number }}"
+          $tag = "v${date}.${run}"
+          echo "TAG=$tag" >> $env:GITHUB_OUTPUT
+          echo "Generated tag: $tag"
+
+      - name: Create Git Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.TAG }}
+          git push origin ${{ steps.version.outputs.TAG }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: "Adheslime ${{ steps.version.outputs.TAG }}"
+          body: |
+            Automated release from commit ${{ github.sha }}
+            
+            **Build**: Release x64
+            **Tests**: All passed [ OK ]
+          files: |
+            build/Release/adheslime.dll
+            build/Release/host.exe
+            build/Release/tester.exe
