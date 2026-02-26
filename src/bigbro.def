@@ -1,0 +1,14 @@
+; bigbro.def - Export by ordinal only (no function names in PE)
+;
+; Usage from host:
+;   auto RunFull = (void(*)())GetProcAddress(hDll, MAKEINTRESOURCEA(1));
+;   auto IsBanned = (int(*)())GetProcAddress(hDll, MAKEINTRESOURCEA(2));
+
+LIBRARY bigbro
+EXPORTS
+    RunFullSuite              @1 NONAME
+    IsUserBanned              @2 NONAME
+    TriggerSelfTamper         @3 NONAME
+    StartBackgroundDetection  @4 NONAME
+    RunHeavyChecksExport      @5 NONAME
+    GetBgThreadId             @6 NONAME

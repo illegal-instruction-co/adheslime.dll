@@ -1,13 +1,9 @@
-// rules/check_processes.js — Blacklisted process/window detection
-// Scans for known reverse engineering and cheat tools
+// rules/check_processes.js - Blacklisted process/window detection
+// Only targets actual game cheat tools, not general development/RE tools
 
 var blacklist = [ // NOSONAR
-    "x64dbg",
     "Cheat Engine",
-    "Process Hacker",
-    "IDA",
-    "OllyDbg",
-    "Wireshark"
+    "CheatEngine"
 ];
 
 for (var i = 0; i < blacklist.length; i++) { // NOSONAR

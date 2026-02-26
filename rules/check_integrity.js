@@ -1,4 +1,4 @@
-// rules/check_integrity.js — Module integrity and anti-tamper checks
+// rules/check_integrity.js - Module integrity and anti-tamper checks
 // Verifies .text section CRC, hardware breakpoints, and ntapi hooks
 
 if (!native.verifyTextIntegrity()) {

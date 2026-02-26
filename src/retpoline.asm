@@ -1,4 +1,4 @@
-; retpoline.asm — x64 MASM Retpoline Thunks for adheslime
+; retpoline.asm - x64 MASM Retpoline Thunks for adheslime
 ; Mitigates Spectre v2 (Branch Target Injection) on indirect calls.
 ;
 ; Usage from C++:
@@ -10,12 +10,12 @@
 ;   2. .setup overwrites that return address with RAX (the real target)
 ;   3. RET pops the real target and jumps to it (architecturally correct)
 ;   4. Speculative execution follows the original prediction into .inner,
-;      which is an infinite PAUSE+LFENCE loop — no useful gadgets leak.
+;      which is an infinite PAUSE+LFENCE loop - no useful gadgets leak.
 
 .code
 
 ; ============================================================
-; retpoline_call_rax — indirect CALL through RAX via retpoline
+; retpoline_call_rax - indirect CALL through RAX via retpoline
 ; ============================================================
 retpoline_call_rax PROC
     call    retpoline_setup_rax
@@ -29,7 +29,7 @@ retpoline_setup_rax:
 retpoline_call_rax ENDP
 
 ; ============================================================
-; retpoline_jmp_rax — indirect JMP through RAX via retpoline
+; retpoline_jmp_rax - indirect JMP through RAX via retpoline
 ; (for tail-call scenarios)
 ; ============================================================
 retpoline_jmp_rax PROC
@@ -42,5 +42,21 @@ retpoline_setup_jmp_rax:
     mov     [rsp], rax
     ret
 retpoline_jmp_rax ENDP
+
+; ============================================================
+; retpoline_dispatch_fn - dispatch a void(*)() via retpoline
+; RCX = function pointer (x64 fastcall first param)
+; ============================================================
+retpoline_dispatch_fn PROC
+    mov     rax, rcx                    ; load target from first param
+    call    retpoline_dispatch_setup
+retpoline_dispatch_trap:
+    pause
+    lfence
+    jmp     retpoline_dispatch_trap     ; speculative trap
+retpoline_dispatch_setup:
+    mov     [rsp], rax                  ; overwrite return address
+    ret                                 ; architecturally jump to target
+retpoline_dispatch_fn ENDP
 
 END

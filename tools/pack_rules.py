@@ -76,7 +76,7 @@ def write_header(output: str, rules: list[tuple[str, bytes, bytes, bytes, int, i
         out.write("#pragma once\n")
         out.write("#include <cstdint>\n")
         out.write("#include <cstddef>\n\n")
-        out.write("namespace adheslime::vfs {\n\n")
+        out.write("namespace bigbro::vfs {\n\n")
 
         for name, nonce, ciphertext, tag, _, _ in rules:
             varname = sanitize_varname(name)

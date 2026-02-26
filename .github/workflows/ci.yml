@@ -30,7 +30,7 @@ jobs:
       - name: Run Tests
         working-directory: build/Release
         run: |
-          Write-Host "=== Running Adheslime Test Suite ==="
+          Write-Host "=== Running BigBro.dll Test Suite ==="
           ./tester.exe
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Tests failed with exit code $LASTEXITCODE"
@@ -59,13 +59,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.TAG }}
-          name: "Adheslime ${{ steps.version.outputs.TAG }}"
+          name: "BigBro.dll ${{ steps.version.outputs.TAG }}"
           body: |
             Automated release from commit ${{ github.sha }}
             
             **Build**: Release x64
             **Tests**: All passed [ OK ]
           files: |
-            build/Release/adheslime.dll
+            build/Release/bigbro.dll
             build/Release/host.exe
             build/Release/tester.exe

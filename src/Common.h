@@ -1,17 +1,19 @@
 #pragma once
 /**
- * adheslime SDK — Shared Internals
+ * bigbro SDK - Shared Internals
  *
- * XorStr, CRC32, global state, InternalBan/Log helpers.
+ * XorStr, CRC32, SHA-256, retpoline, global state, InternalBan/Log helpers.
  * Included by all src/ modules. NOT a public header.
  */
-#include <adheslime/Sdk.h>
+#include <bigbro/Sdk.h>
 
 #include <vector>
 #include <string>
+#include <array>
 #include <chrono>
 #include <thread>
 #include <mutex>
+#include <shared_mutex>
 #include <atomic>
 #include <fstream>
 #include <filesystem>
@@ -24,33 +26,28 @@
 
 using namespace std;
 
-// Forward declaration — full definition in engine/duktape.h
 struct duk_hthread;
 typedef struct duk_hthread duk_context;
 
 namespace fs = filesystem;
 
-// ============================================================
-// COMPILE-TIME STRING OBFUSCATION
-// ============================================================
-template<size_t N>
+template<size_t N, uint8_t Key = 0x5A>
 struct XorStr final {
     char data[N];
     constexpr XorStr(const char* s) : data{} {
-        for (size_t i = 0; i < N; ++i) data[i] = s[i] ^ 0x5A;
+        for (size_t i = 0; i < N; ++i)
+            data[i] = s[i] ^ (uint8_t)(Key + i * 7);
     }
     string Decrypt() const {
         string s;
-        for (size_t i = 0; i < N - 1; ++i) s += (data[i] ^ 0x5A);
+        for (size_t i = 0; i < N - 1; ++i)
+            s += (char)(data[i] ^ (uint8_t)(Key + i * 7));
         return s;
     }
 };
-#define X(s) []{ constexpr XorStr<(sizeof(s))> res(s); return res.Decrypt(); }()
+#define X(s) []{ constexpr XorStr<sizeof(s), (uint8_t)(__COUNTER__ * 131 + 47)> res(s); return res.Decrypt(); }()
 
-// ============================================================
-// CRC32
-// ============================================================
-inline uint32_t CalculateCRC32(const unsigned char* data, size_t length) {
+__forceinline uint32_t CalculateCRC32(const unsigned char* data, size_t length) {
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < length; i++) {
         crc ^= data[i];
@@ -59,34 +56,63 @@ inline uint32_t CalculateCRC32(const unsigned char* data, size_t length) {
     return ~crc;
 }
 
-// ============================================================
-// RETPOLINE (defined in retpoline.asm)
-// ============================================================
-extern "C" void retpoline_call_rax();
+using Sha256Digest = array<uint8_t, 32>;
 
-typedef void (*DetectionFunc)();
-__declspec(noinline) inline void RetpolineDispatch(DetectionFunc fn) {
-    fn();
+__forceinline bool CalculateSHA256(const uint8_t* data, size_t length, Sha256Digest& out) {
+    BCRYPT_ALG_HANDLE  hAlg  = nullptr;
+    BCRYPT_HASH_HANDLE hHash = nullptr;
+    bool ok = false;
+
+    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0) != 0)
+        return false;
+    if (BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0) != 0)
+        goto cleanup;
+    if (BCryptHashData(hHash, const_cast<PUCHAR>(data), static_cast<ULONG>(length), 0) != 0)
+        goto cleanup;
+    if (BCryptFinishHash(hHash, out.data(), 32, 0) != 0)
+        goto cleanup;
+    ok = true;
+
+cleanup:
+    if (hHash) BCryptDestroyHash(hHash);
+    if (hAlg)  BCryptCloseAlgorithmProvider(hAlg, 0);
+    return ok;
 }
 
-// ============================================================
-// GLOBAL STATE (shared across modules)
-// ============================================================
-extern adheslime::Config g_config;
+extern "C" void retpoline_call_rax();
+extern "C" void retpoline_dispatch_fn(void* target);
+
+typedef void (*DetectionFunc)();
+
+__forceinline void RetpolineDispatch(DetectionFunc fn) {
+    retpoline_dispatch_fn(reinterpret_cast<void*>(fn));
+}
+
+extern bigbro::Config g_config;
 extern duk_context*      g_duk;
 extern atomic<bool>      g_initialized;
 extern atomic<bool>      g_banned;
-extern mutex             g_mutex;
+extern shared_mutex      g_mutex;
 extern vector<string>    g_ruleScripts;
-extern uint32_t          g_textBaseline;
+extern Sha256Digest      g_textBaseline;
+extern bool              g_textBaselineSet;
+extern Sha256Digest      g_dispatchHash;
+extern bool              g_dispatchHashSet;
 extern DWORD             g_dispatchProtect;
 
-// ============================================================
-// INTERNAL HELPERS
-// ============================================================
-inline void InternalBan(uint32_t code, const char* reason) {
-    adheslime::SDK::Get().ReportBan(code, reason);
+extern atomic<bool>      g_bgStop;
+extern thread            g_bgThread;
+
+extern atomic<uint64_t>  g_heartbeatTick;
+extern atomic<DWORD>     g_tickThreadId;
+extern bool              g_heartbeatArmed;
+
+extern Sha256Digest      g_iatBaseline;
+extern bool              g_iatBaselineSet;
+
+__forceinline void InternalBan(uint32_t code, const char* reason) {
+    bigbro::SDK::Get().ReportBan(code, reason);
 }
-inline void InternalLog(const char* msg) {
-    adheslime::SDK::Get().ReportLog(msg);
+__forceinline void InternalLog(const char* msg) {
+    bigbro::SDK::Get().ReportLog(msg);
 }

@@ -1,5 +1,5 @@
 /**
- * Adheslime SDK — Integration Demo
+ * BigBro SDK - Integration Demo
  *
  * Shows how to:
  *   1. Configure the SDK with callbacks
@@ -7,7 +7,7 @@
  *   3. Run the detection loop
  */
 
-#include <adheslime/Sdk.h>
+#include <bigbro/Sdk.h>
  
 #include <cstdio>
  
@@ -17,9 +17,9 @@ using namespace std;
 
 // ============================================================
 // Example: Custom Detection Component
-// Game developers extend adheslime::Component to add game-specific checks
+// Game developers extend bigbro::Component to add game-specific checks
 // ============================================================
-class SpeedHackDetector final : public adheslime::Component {
+class SpeedHackDetector final : public bigbro::Component {
     DWORD _lastTickCount = 0;
 
 public:
@@ -46,20 +46,20 @@ public:
 // Callbacks
 // ============================================================
 int main() {
-    printf("=== Adheslime SDK Demo ===\n\n");
+    printf("=== BigBro SDK Demo ===\n\n");
 
-    auto& sdk = adheslime::SDK::Get();
+    auto& sdk = bigbro::SDK::Get();
 
     // --- Register custom component BEFORE Init ---
     sdk.Components().Register(make_shared<SpeedHackDetector>());
 
     // --- Configure & Init ---
     int ret = sdk.Init({
-        .encryptionKey = "adheslime-default-key",
-        .onBan = [](const adheslime::BanEvent& e) {
+        .encryptionKey = "bigbro-default-key",
+        .onBan = [](const bigbro::BanEvent& e) {
             printf("\n  [BANNED] Code: 0x%04X | Reason: %s\n\n", e.code, e.reason.c_str());
         },
-        .onLog = [](const adheslime::LogEvent& e) {
+        .onLog = [](const bigbro::LogEvent& e) {
             printf("  [log] %s\n", e.message.c_str());
         },
     });

@@ -1,4 +1,4 @@
-// rules/check_debugger.js — Debugger detection rule
+// rules/check_debugger.js - Debugger detection rule
 // Uses native bindings to detect attached debuggers and timing anomalies
 
 if (native.isDebuggerPresent()) {

@@ -1,9 +1,7 @@
 #include "Vfs.h"
+
 #include "packed_rules.gen.h"
 
-// ============================================================
-// AES-256-GCM DECRYPTION (Windows BCrypt)
-// ============================================================
 static bool AesGcmDecrypt(const unsigned char* key32,
                           const unsigned char* nonce12,
                           const unsigned char* tag16,
@@ -54,9 +52,6 @@ cleanup:
     return ok;
 }
 
-// ============================================================
-// SHA-256 KEY DERIVATION
-// ============================================================
 static bool DeriveKey(const string& passphrase, unsigned char out[32]) {
     BCRYPT_ALG_HANDLE hHash = nullptr;
     BCRYPT_HASH_HANDLE hHashObj = nullptr;
@@ -74,15 +69,12 @@ cleanup:
     return ok;
 }
 
-// ============================================================
-// EMBEDDED RULE LOADING (AES-256-GCM + CRC32 verify)
-// ============================================================
 void LoadEmbeddedRules() {
-    using namespace adheslime::vfs;
+    using namespace bigbro::vfs;
 
     unsigned char aesKey[32];
     if (!DeriveKey(g_config.encryptionKey, aesKey)) {
-        InternalBan(0xA00F, "key_derivation_failed");
+        InternalBan(0xA00F, X("key_derivation_failed").c_str());
         return;
     }
 
@@ -92,14 +84,14 @@ void LoadEmbeddedRules() {
         vector<unsigned char> plaintext;
         if (!AesGcmDecrypt(aesKey, rule.nonce, rule.tag,
                            rule.ciphertext, rule.ciphertextSize, plaintext)) {
-            InternalBan(0xA00E, "rule_decrypt_failed");
+            InternalBan(0xA00E, X("rule_decrypt_failed").c_str());
             SecureZeroMemory(aesKey, 32);
             return;
         }
 
         uint32_t crc = CalculateCRC32(plaintext.data(), plaintext.size());
         if (crc != rule.crc32) {
-            InternalBan(0xA00E, "rule_integrity_fail");
+            InternalBan(0xA00E, X("rule_integrity_fail").c_str());
             SecureZeroMemory(aesKey, 32);
             return;
         }
@@ -113,9 +105,6 @@ void LoadEmbeddedRules() {
     InternalLog(("VFS: " + to_string(kPackedRuleCount) + " rule(s) decrypted").c_str());
 }
 
-// ============================================================
-// FILESYSTEM RULE LOADING (dev mode)
-// ============================================================
 int LoadRuleFromFile(string_view path) {
     ifstream file(string(path), ios::binary);
     if (!file.is_open()) {

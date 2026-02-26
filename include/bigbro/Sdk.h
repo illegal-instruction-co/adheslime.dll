@@ -1,21 +1,26 @@
 #pragma once
 
 /**
- * adheslime SDK — C++20 Public API
+ * bigbro SDK - C++20 Public API
  *
  * Modern, component-driven anti-cheat SDK. Register your own detection
  * modules, load JS rules, and handle ban events via callbacks.
  *
  * Quick start:
- *   adheslime::SDK::Get().Init({
+ *   bigbro::SDK::Get().Init({
  *       .rulesDirectory = "./rules",
- *       .onBan = [](const adheslime::BanEvent& e) { ... },
+ *       .onBan = [](const bigbro::BanEvent& e) { ... },
  *   });
  *
  *   // game loop
- *   adheslime::SDK::Get().Tick();
+ *   bigbro::SDK::Get().Tick();
  *
- *   adheslime::SDK::Get().Shutdown();
+ *   bigbro::SDK::Get().Shutdown();
+ *
+ * Protected variables:
+ *   int playerHealth = 100;
+ *   bigbro::SDK::Get().ProtectVariable("health", &playerHealth, sizeof(playerHealth));
+ *   // Now if anyone WriteProcessMemory's playerHealth, the next Tick() bans.
  */
 
 #include <cstdint>
@@ -26,13 +31,13 @@
 #include <functional>
 #include <map>
 
-#ifdef ADHESLIME_EXPORTS
-    #define ADHESLIME_API __declspec(dllexport)
+#ifdef BIGBRO_EXPORTS
+    #define BIGBRO_API __declspec(dllexport)
 #else
-    #define ADHESLIME_API __declspec(dllimport)
+    #define BIGBRO_API __declspec(dllimport)
 #endif
 
-namespace adheslime {
+namespace bigbro {
 
 // ============================================================
 // Events
@@ -48,14 +53,14 @@ struct LogEvent {
 };
 
 // ============================================================
-// Callbacks — std::function for maximum flexibility
+// Callbacks - std::function for maximum flexibility
 // ============================================================
 
 using BanCallback = std::function<void(const BanEvent&)>;
 using LogCallback = std::function<void(const LogEvent&)>;
 
 // ============================================================
-// Configuration — uses C++20 designated initializers
+// Configuration - uses C++20 designated initializers
 // ============================================================
 
 enum class Flag : uint32_t {
@@ -64,6 +69,7 @@ enum class Flag : uint32_t {
     NoNative           = 0x02,   // Skip native detection, JS only
     NoScripts          = 0x04,   // Skip JS rules, native only
     UseFilesystemRules = 0x08,   // Load JS from disk (dev mode). Default: embedded VFS
+    NoBgThread         = 0x10,   // Don't auto-start background detection thread
 };
 
 inline Flag operator|(Flag a, Flag b) { return static_cast<Flag>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b)); }
@@ -78,10 +84,10 @@ struct Config {
 };
 
 // ============================================================
-// Component — extend this to create your own detection module
+// Component - extend this to create your own detection module
 // ============================================================
 
-class ADHESLIME_API Component {
+class BIGBRO_API Component {
 public:
     virtual ~Component() = default;
 
@@ -99,10 +105,10 @@ public:
 };
 
 // ============================================================
-// ComponentRegistry — register and query detection modules
+// ComponentRegistry - register and query detection modules
 // ============================================================
 
-class ADHESLIME_API ComponentRegistry final {
+class BIGBRO_API ComponentRegistry final {
 public:
     /** Register a component. Takes ownership via shared_ptr. */
     void Register(std::shared_ptr<Component> component);
@@ -130,10 +136,10 @@ private:
 };
 
 // ============================================================
-// SDK — main entry point (singleton)
+// SDK - main entry point (singleton)
 // ============================================================
 
-class ADHESLIME_API SDK final {
+class BIGBRO_API SDK final {
 public:
     /** Global SDK instance. */
     static SDK& Get();
@@ -156,6 +162,29 @@ public:
     /** Access the component registry to register/find modules. */
     ComponentRegistry& Components() { return _registry; }
 
+    // ============================================================
+    // Protected Variables - register game data for tamper detection
+    //
+    // The SDK keeps a shadow copy of your data. Each Tick, it
+    // compares the live value against the shadow. If they differ
+    // and you didn't call UpdateProtectedVariable(), it's tampering.
+    //
+    // Usage:
+    //   int health = 100;
+    //   SDK::Get().ProtectVariable("health", &health, sizeof(health));
+    //   health = 80;  // legitimate change
+    //   SDK::Get().UpdateProtectedVariable("health"); // sync shadow
+    // ============================================================
+
+    /** Register a memory region for tamper detection. */
+    void ProtectVariable(std::string_view name, const void* ptr, size_t size);
+
+    /** Remove a protected variable. */
+    void UnprotectVariable(std::string_view name);
+
+    /** Call after legitimate changes to resync the shadow copy. */
+    void UpdateProtectedVariable(std::string_view name);
+
     // --- Internal (used by native bindings, not for public use) ---
     void ReportBan(uint32_t code, std::string_view reason);
     void ReportLog(std::string_view message);
@@ -169,14 +198,14 @@ private:
     ComponentRegistry _registry;
 };
 
-} // namespace adheslime
+} // namespace bigbro
 
 // ============================================================
 // C exports (for DLL boundary + legacy compatibility)
 // ============================================================
 extern "C" {
-    ADHESLIME_API void RunFullSuite();
-    ADHESLIME_API int  IsUserBanned();
-    ADHESLIME_API void TriggerSelfTamper();
-    ADHESLIME_API void StartBackgroundDetection();
+    void RunFullSuite();
+    int  IsUserBanned();
+    void TriggerSelfTamper();
+    void StartBackgroundDetection();
 }
