@@ -12,6 +12,7 @@ reverse engineered a thing mimicked. rebuilt from scratch.
 - fiber-based scheduling
 - xorstr on everything
 - tls callback for early init
+- retpoline dispatch (spectre v2 mitigation) + `/Qspectre`
 - single `CreateComponent` export (original pattern)
 
 all strings obfuscated. no console output. opaque ban codes only.

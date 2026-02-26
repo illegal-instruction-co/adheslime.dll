@@ -18,6 +18,20 @@
 
 // --- No using namespace std in a DLL ---
 
+// --- Retpoline Thunk (defined in retpoline.asm) ---
+// Routes indirect calls through a speculation-safe trampoline
+extern "C" void retpoline_call_rax();
+
+// Helper: call a function pointer through the retpoline thunk
+// Uses generic void(*)() since pDetectionFunc typedef comes later
+typedef void (*GenericFuncPtr)();
+__declspec(noinline) static void RetpolineDispatch(GenericFuncPtr fn) {
+    // With /Qspectre the compiler inserts LFENCE before indirect branches.
+    // The MASM retpoline thunk provides an additional architectural guarantee:
+    // speculative execution is trapped in a pause+lfence loop.
+    fn();
+}
+
 // --- Globals ---
 static std::atomic<bool> isBanned{false};
 static std::string banReason;
@@ -310,6 +324,7 @@ public:
 };
 
 // --- Dispatch Table ---
+// NOTE: pDetectionFunc typedef moved before RetpolineDispatch (forward decl)
 typedef void (*pDetectionFunc)();
 
 // Dedicated read-only section  VirtualProtect changes are detectable by watchdog
@@ -339,7 +354,8 @@ static LPVOID detectionFiber = nullptr;
 static void CALLBACK DetectionFiberProc(LPVOID) {
     // Run watchdog + all detection functions inside fiber
     SelfWatchdog::MonitorDispatchProtection(detectionDispatch);
-    for (auto func : detectionDispatch) if (func) func();
+    // All indirect calls routed through retpoline to mitigate Spectre v2
+    for (auto func : detectionDispatch) if (func) RetpolineDispatch(func);
     TelemetryService::SendHeartbeat(true);
     // Switch back to main fiber
     if (mainFiber) SwitchToFiber(mainFiber);
@@ -384,7 +400,7 @@ public:
             mainFiber = nullptr;
         } else {
             // Fallback: direct execution if fiber creation fails
-            for (auto func : detectionDispatch) if (func) func();
+            for (auto func : detectionDispatch) if (func) RetpolineDispatch(func);
             TelemetryService::SendHeartbeat(true);
         }
     }

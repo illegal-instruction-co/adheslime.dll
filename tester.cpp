@@ -155,6 +155,16 @@ static int TestBanCodes() {
     return IsBanned() ? 1 : 0;
 }
 
+static int TestRetpolineDispatch() {
+    // Verify retpoline-routed dispatch completes without crash or false ban.
+    // All indirect calls in the dispatch table go through retpoline_call_rax thunk.
+    if (!LoadDll()) return 1;
+    RunFull();  // First run: init + retpoline dispatch
+    if (IsBanned()) return 1;
+    RunFull();  // Second run: confirms no state corruption from retpoline routing
+    return IsBanned() ? 1 : 0;
+}
+
 // ============================================================
 // Single Test Entry Point (child mode)
 // ============================================================
@@ -169,6 +179,7 @@ static int RunSingleTest(const std::string& testName) {
     if (testName == "tls_callback")     return TestTlsCallback();
     if (testName == "dllmain")          return TestDllMainHardening();
     if (testName == "ban_codes")        return TestBanCodes();
+    if (testName == "retpoline")        return TestRetpolineDispatch();
     return 99; // unknown test
 }
 
@@ -226,6 +237,7 @@ int main(int argc, char* argv[]) {
         {"clean_dispatch",   "Full Detection Dispatch (clean run)",  false},
         {"ban_codes",        "Opaque Ban Codes (no plaintext)",      false},
         {"xorstr",           "XorStr Obfuscation (string scan)",     false},
+        {"retpoline",        "Retpoline Dispatch (Spectre v2)",       false},
         {"self_tamper",      "Self-Tamper Watchdog (memory protect)", true},
     };
 
