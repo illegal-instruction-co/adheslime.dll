@@ -2,38 +2,48 @@
 #include "packed_rules.gen.h"
 
 // ============================================================
-// AES-256-CBC DECRYPTION (Windows BCrypt)
+// AES-256-GCM DECRYPTION (Windows BCrypt)
 // ============================================================
-static bool AesDecrypt(const unsigned char* key32, const unsigned char* iv16,
-                       const unsigned char* ciphertext, size_t cipherLen,
-                       vector<unsigned char>& plaintext) {
+static bool AesGcmDecrypt(const unsigned char* key32,
+                          const unsigned char* nonce12,
+                          const unsigned char* tag16,
+                          const unsigned char* ciphertext, size_t cipherLen,
+                          vector<unsigned char>& plaintext) {
     BCRYPT_ALG_HANDLE hAlg = nullptr;
     BCRYPT_KEY_HANDLE hKey = nullptr;
     bool ok = false;
 
-    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, NULL, 0) != 0) return false;
-    if (BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_CBC,
-                          sizeof(BCRYPT_CHAIN_MODE_CBC), 0) != 0) goto cleanup;
+    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, NULL, 0) != 0)
+        return false;
+    if (BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE,
+                          (PUCHAR)BCRYPT_CHAIN_MODE_GCM,
+                          sizeof(BCRYPT_CHAIN_MODE_GCM), 0) != 0)
+        goto cleanup;
     if (BCryptGenerateSymmetricKey(hAlg, &hKey, NULL, 0,
-                                   (PUCHAR)key32, 32, 0) != 0) goto cleanup;
+                                   (PUCHAR)key32, 32, 0) != 0)
+        goto cleanup;
 
     {
+        BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO authInfo;
+        BCRYPT_INIT_AUTH_MODE_INFO(authInfo);
+        authInfo.pbNonce  = (PUCHAR)nonce12;
+        authInfo.cbNonce  = 12;
+        authInfo.pbTag    = (PUCHAR)tag16;
+        authInfo.cbTag    = 16;
+
+        plaintext.resize(cipherLen);
         ULONG cbResult = 0;
-        ULONG cbPlain = 0;
 
-        unsigned char ivCopy[16];
-        memcpy(ivCopy, iv16, 16);
-        if (BCryptDecrypt(hKey, (PUCHAR)ciphertext, (ULONG)cipherLen,
-                          NULL, ivCopy, 16, NULL, 0, &cbPlain, BCRYPT_BLOCK_PADDING) != 0)
-            goto cleanup;
+        NTSTATUS status = BCryptDecrypt(
+            hKey,
+            (PUCHAR)ciphertext, (ULONG)cipherLen,
+            &authInfo,
+            NULL, 0,
+            plaintext.data(), (ULONG)cipherLen,
+            &cbResult, 0
+        );
 
-        plaintext.resize(cbPlain);
-        memcpy(ivCopy, iv16, 16);
-        if (BCryptDecrypt(hKey, (PUCHAR)ciphertext, (ULONG)cipherLen,
-                          NULL, ivCopy, 16, plaintext.data(), cbPlain,
-                          &cbResult, BCRYPT_BLOCK_PADDING) != 0)
-            goto cleanup;
-
+        if (status != 0) goto cleanup;
         plaintext.resize(cbResult);
         ok = true;
     }
@@ -65,7 +75,7 @@ cleanup:
 }
 
 // ============================================================
-// EMBEDDED RULE LOADING (AES-256-CBC + CRC32 verify)
+// EMBEDDED RULE LOADING (AES-256-GCM + CRC32 verify)
 // ============================================================
 void LoadEmbeddedRules() {
     using namespace adheslime::vfs;
@@ -80,7 +90,8 @@ void LoadEmbeddedRules() {
         const auto& rule = kPackedRules[i];
 
         vector<unsigned char> plaintext;
-        if (!AesDecrypt(aesKey, rule.iv, rule.ciphertext, rule.ciphertextSize, plaintext)) {
+        if (!AesGcmDecrypt(aesKey, rule.nonce, rule.tag,
+                           rule.ciphertext, rule.ciphertextSize, plaintext)) {
             InternalBan(0xA00E, "rule_decrypt_failed");
             SecureZeroMemory(aesKey, 32);
             return;
