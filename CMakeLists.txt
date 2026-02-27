@@ -35,6 +35,10 @@ target_link_libraries(bigbro PRIVATE ntdll bcrypt)
 add_executable(host examples/Host.cpp)
 target_include_directories(host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(host PRIVATE bcrypt)
+if(MSVC)
+    target_compile_options(host PRIVATE /guard:cf)
+    target_link_options(host PRIVATE /guard:cf)
+endif()
 
 # ============================================================
 # Tester Application (Validation Suite)
@@ -42,6 +46,10 @@ target_link_libraries(host PRIVATE bcrypt)
 add_executable(tester tests/Tester.cpp)
 target_include_directories(tester PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(tester PRIVATE bcrypt)
+if(MSVC)
+    target_compile_options(tester PRIVATE /guard:cf)
+    target_link_options(tester PRIVATE /guard:cf)
+endif()
 
 # ============================================================
 # MSVC Compiler + Linker Hardening (anti-reverse-engineering)
@@ -49,6 +57,7 @@ target_link_libraries(tester PRIVATE bcrypt)
 if(MSVC)
     # --- Release-only: aggressive optimization + obfuscation ---
     target_compile_options(bigbro PRIVATE
+        /guard:cf       # Control Flow Guard
         $<$<CONFIG:Release>:
             /GL             # Whole Program Optimization
             /Ob3            # Maximum inlining
@@ -61,6 +70,7 @@ if(MSVC)
 
     # --- Release linker flags ---
     target_link_options(bigbro PRIVATE
+        /guard:cf       # Control Flow Guard
         $<$<CONFIG:Release>:
             /LTCG                   # Link-Time Code Generation
             /OPT:REF                # Remove unreferenced functions

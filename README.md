@@ -126,6 +126,7 @@ graph LR
         XOR["XorStr<br/>Compile-time encryption"]
         OBF["Opaque Predicates<br/>Junk branches"]
         RET["Retpoline<br/>Spectre v2 mitigation"]
+        CFG["CFG<br/>Control Flow Guard"]
         NONAME["NONAME Exports<br/>Zero symbol names in PE"]
     end
 
