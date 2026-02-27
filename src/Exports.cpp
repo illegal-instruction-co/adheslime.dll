@@ -1,7 +1,70 @@
 #include "Detection.h"
 #include "StealthImport.h"
 
+static BigBro_BanCallbackFn g_cBanCallback = nullptr;
+static BigBro_LogCallbackFn g_cLogCallback = nullptr;
+
 extern "C" {
+
+void BigBro_SetBanCallback(BigBro_BanCallbackFn cb) {
+    g_cBanCallback = cb;
+}
+
+void BigBro_SetLogCallback(BigBro_LogCallbackFn cb) {
+    g_cLogCallback = cb;
+}
+
+int BigBro_Init(uint32_t flags, const char* encryptionKey, const char* rulesDir) {
+    bigbro::Config cfg{};
+    cfg.flags = static_cast<bigbro::Flag>(flags);
+    if (encryptionKey) cfg.encryptionKey = encryptionKey;
+    if (rulesDir)      cfg.rulesDirectory = rulesDir;
+
+    if (g_cBanCallback) {
+        cfg.onBan = [](const bigbro::BanEvent& e) {
+            g_cBanCallback(e.code, e.reason.c_str());
+        };
+    }
+    if (g_cLogCallback) {
+        cfg.onLog = [](const bigbro::LogEvent& e) {
+            g_cLogCallback(e.message.c_str());
+        };
+    }
+
+    return bigbro::SDK::Get().Init(cfg);
+}
+
+int BigBro_Tick() {
+    return bigbro::SDK::Get().Tick();
+}
+
+void BigBro_Shutdown() {
+    bigbro::SDK::Get().Shutdown();
+}
+
+int BigBro_IsBanned() {
+    return bigbro::SDK::Get().IsBanned() ? 1 : 0;
+}
+
+int BigBro_LoadRule(const char* jsPath) {
+    if (!jsPath) return -1;
+    return bigbro::SDK::Get().LoadRule(jsPath);
+}
+
+void BigBro_ProtectVariable(const char* name, const void* ptr, uint32_t size) {
+    if (!name) return;
+    bigbro::SDK::Get().ProtectVariable(name, ptr, size);
+}
+
+void BigBro_UnprotectVariable(const char* name) {
+    if (!name) return;
+    bigbro::SDK::Get().UnprotectVariable(name);
+}
+
+void BigBro_UpdateProtectedVariable(const char* name) {
+    if (!name) return;
+    bigbro::SDK::Get().UpdateProtectedVariable(name);
+}
 
 void RunFullSuite() {
     if (!g_initialized) {
@@ -38,9 +101,9 @@ void RunHeavyChecksExport() {
     RunHeavyChecks();
 }
 
-DWORD GetBgThreadId() {
+uint32_t GetBgThreadId() {
     if (!g_bgThread.joinable()) return 0;
-    return GetThreadId(g_bgThread.native_handle());
+    return (uint32_t)GetThreadId(g_bgThread.native_handle());
 }
 
 } 

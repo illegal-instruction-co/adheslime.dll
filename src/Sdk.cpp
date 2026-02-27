@@ -1,11 +1,10 @@
-/**
- * SDK + ComponentRegistry Implementation
- */
 #include "Detection.h"
 #include "JsEngine.h"
 #include "Vfs.h"
 #include "Syscalls.h"
 #include "StealthImport.h"
+
+extern void RegisterCustomComponents(bigbro::ComponentRegistry& registry);
 
 bigbro::Config g_config;
 duk_context*      g_duk = nullptr;
@@ -128,6 +127,8 @@ int SDK::Init(const Config& config) {
     } else {
         LoadEmbeddedRules();
     }
+
+    RegisterCustomComponents(_registry);
 
     for (const auto& name : _registry.List()) {
         if (auto* comp = _registry.Find(name)) comp->OnInit();

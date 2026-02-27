@@ -31,11 +31,8 @@
 #include <functional>
 #include <map>
 
-#ifdef BIGBRO_EXPORTS
-    #define BIGBRO_API __declspec(dllexport)
-#else
-    #define BIGBRO_API __declspec(dllimport)
-#endif
+// Internal linkage only — no C++ symbols exported from DLL.
+// Public API is C-only via ordinal exports (see bigbro.def).
 
 namespace bigbro {
 
@@ -87,7 +84,7 @@ struct Config {
 // Component - extend this to create your own detection module
 // ============================================================
 
-class BIGBRO_API Component {
+class Component {
 public:
     virtual ~Component() = default;
 
@@ -108,7 +105,7 @@ public:
 // ComponentRegistry - register and query detection modules
 // ============================================================
 
-class BIGBRO_API ComponentRegistry final {
+class ComponentRegistry final {
 public:
     /** Register a component. Takes ownership via shared_ptr. */
     void Register(std::shared_ptr<Component> component);
@@ -139,7 +136,7 @@ private:
 // SDK - main entry point (singleton)
 // ============================================================
 
-class BIGBRO_API SDK final {
+class SDK final {
 public:
     /** Global SDK instance. */
     static SDK& Get();
@@ -201,11 +198,33 @@ private:
 } // namespace bigbro
 
 // ============================================================
-// C exports (for DLL boundary + legacy compatibility)
+// C API — ordinal-only exports (no symbol names in PE)
+// Host loads via LoadLibrary + GetProcAddress(MAKEINTRESOURCEA(N))
 // ============================================================
 extern "C" {
-    void RunFullSuite();
-    int  IsUserBanned();
-    void TriggerSelfTamper();
-    void StartBackgroundDetection();
+    // Callbacks (set BEFORE Init)
+    typedef void (*BigBro_BanCallbackFn)(uint32_t code, const char* reason);
+    typedef void (*BigBro_LogCallbackFn)(const char* message);
+    void  BigBro_SetBanCallback(BigBro_BanCallbackFn cb);   // @12
+    void  BigBro_SetLogCallback(BigBro_LogCallbackFn cb);   // @13
+
+    // Lifecycle
+    int   BigBro_Init(uint32_t flags, const char* encryptionKey, const char* rulesDir); // @7
+    int   BigBro_Tick();                                    // @8
+    void  BigBro_Shutdown();                                // @9
+    int   BigBro_IsBanned();                                // @10
+    int   BigBro_LoadRule(const char* jsPath);              // @11
+
+    // Protected variables
+    void  BigBro_ProtectVariable(const char* name, const void* ptr, uint32_t size);  // @14
+    void  BigBro_UnprotectVariable(const char* name);       // @15
+    void  BigBro_UpdateProtectedVariable(const char* name); // @16
+
+    // Legacy compat
+    void  RunFullSuite();                                   // @1
+    int   IsUserBanned();                                   // @2
+    void  TriggerSelfTamper();                              // @3
+    void  StartBackgroundDetection();                       // @4
+    void  RunHeavyChecksExport();                           // @5
+    uint32_t GetBgThreadId();                                  // @6
 }

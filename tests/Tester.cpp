@@ -1,33 +1,58 @@
 /**
- * BigBro SDK - Comprehensive Validation Suite
+ * BigBro SDK - Comprehensive Validation Suite (C API / Ordinal-Only)
  *
  * Each test runs in an isolated child process.
  * Uses --test <name> for child mode.
+ * All SDK interaction via LoadLibrary + GetProcAddress (ordinal only).
  */
-#include <bigbro/Sdk.h>
-
-#include <iostream>
 #include <cstdio>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <thread>
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 using namespace std;
 
-typedef void (*RunFullSuite_t)();
-typedef void (*TriggerSelfTamper_t)();
-typedef int  (*IsUserBanned_t)();
-typedef void (*StartBgDetection_t)();
-typedef void (*RunHeavyChecks_t)();
+// ============================================================
+// Function pointer types (ordinal-only C API)
+// ============================================================
+typedef void  (*SetBanCb_t)(void(*)(uint32_t, const char*));
+typedef void  (*SetLogCb_t)(void(*)(const char*));
+typedef int   (*Init_t)(uint32_t, const char*, const char*);
+typedef int   (*Tick_t)();
+typedef void  (*Shutdown_t)();
+typedef int   (*IsBanned_t)();
+typedef int   (*LoadRule_t)(const char*);
+typedef void  (*ProtectVar_t)(const char*, const void*, uint32_t);
+typedef void  (*UnprotectVar_t)(const char*);
+typedef void  (*UpdateProtectVar_t)(const char*);
+typedef void  (*RunFullSuite_t)();
+typedef void  (*TriggerSelfTamper_t)();
+typedef void  (*StartBgDetection_t)();
+typedef void  (*RunHeavyChecks_t)();
 typedef DWORD (*GetBgThreadId_t)();
 
 struct DllExports {
     HMODULE hDll = nullptr;
+    // New C API (@7-@16)
+    SetBanCb_t        SetBanCb = nullptr;
+    SetLogCb_t        SetLogCb = nullptr;
+    Init_t            Init = nullptr;
+    Tick_t            Tick = nullptr;
+    Shutdown_t        Shutdown = nullptr;
+    IsBanned_t        IsBanned = nullptr;
+    LoadRule_t        LoadRule = nullptr;
+    ProtectVar_t      ProtectVar = nullptr;
+    UnprotectVar_t    UnprotectVar = nullptr;
+    UpdateProtectVar_t UpdateProtectVar = nullptr;
+    // Legacy C API (@1-@6)
     RunFullSuite_t      RunFull = nullptr;
     TriggerSelfTamper_t Tamper = nullptr;
-    IsUserBanned_t      LegacyBanned = nullptr;
     StartBgDetection_t  StartBg = nullptr;
     RunHeavyChecks_t    HeavyChecks = nullptr;
     GetBgThreadId_t     BgThreadId = nullptr;
@@ -39,51 +64,56 @@ static DllExports g_dll;
 static bool     g_banFired = false;
 static uint32_t g_banCode  = 0;
 
+static void __cdecl BanCallback(uint32_t code, const char* reason) {
+    g_banFired = true;
+    g_banCode = code;
+}
+
+static void __cdecl LogCallback(const char* message) {
+    // silent
+}
+
 static bool LoadDll() {
     g_dll.hDll = LoadLibraryA("bigbro.dll");
     if (!g_dll.hDll) return false;
-    // Ordinal-only exports (NONAME in .def) - no function names in PE
-    g_dll.RunFull      = (RunFullSuite_t)GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(1));
-    g_dll.Tamper       = (TriggerSelfTamper_t)GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(3));
-    g_dll.LegacyBanned = (IsUserBanned_t)GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(2));
-    g_dll.StartBg      = (StartBgDetection_t)GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(4));
-    g_dll.HeavyChecks  = (RunHeavyChecks_t)GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(5));
-    g_dll.BgThreadId   = (GetBgThreadId_t)GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(6));
+    // New C API
+    g_dll.SetBanCb       = (SetBanCb_t)       GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(12));
+    g_dll.SetLogCb       = (SetLogCb_t)       GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(13));
+    g_dll.Init           = (Init_t)           GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(7));
+    g_dll.Tick           = (Tick_t)           GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(8));
+    g_dll.Shutdown       = (Shutdown_t)       GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(9));
+    g_dll.IsBanned       = (IsBanned_t)       GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(10));
+    g_dll.LoadRule       = (LoadRule_t)       GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(11));
+    g_dll.ProtectVar     = (ProtectVar_t)     GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(14));
+    g_dll.UnprotectVar   = (UnprotectVar_t)   GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(15));
+    g_dll.UpdateProtectVar = (UpdateProtectVar_t) GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(16));
+    // Legacy
+    g_dll.RunFull        = (RunFullSuite_t)     GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(1));
+    g_dll.Tamper         = (TriggerSelfTamper_t)GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(3));
+    g_dll.StartBg        = (StartBgDetection_t) GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(4));
+    g_dll.HeavyChecks    = (RunHeavyChecks_t)   GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(5));
+    g_dll.BgThreadId     = (GetBgThreadId_t)    GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(6));
     return true;
 }
+
+// flags enum values (mirror bigbro::Flag)
+static constexpr uint32_t FLAG_NONE              = 0x00;
+static constexpr uint32_t FLAG_VERBOSE            = 0x01;
+static constexpr uint32_t FLAG_NO_NATIVE          = 0x02;
+static constexpr uint32_t FLAG_NO_SCRIPTS         = 0x04;
+static constexpr uint32_t FLAG_USE_FS_RULES       = 0x08;
+static constexpr uint32_t FLAG_NO_BG_THREAD       = 0x10;
 
 static bool InitSDK(const char* rulesDir = nullptr, bool useFilesystem = false, bool noBgThread = true) {
     g_banFired = false;
     g_banCode = 0;
-    bigbro::Flag flags = bigbro::Flag::None;
-    if (useFilesystem) flags = flags | bigbro::Flag::UseFilesystemRules;
-    if (noBgThread) flags = flags | bigbro::Flag::NoBgThread; // prevent bg thread in subprocess
-    return bigbro::SDK::Get().Init({
-        .rulesDirectory = rulesDir ? rulesDir : "",
-        .encryptionKey = "bigbro-default-key",
-        .onBan = [](const bigbro::BanEvent& e) {
-            g_banFired = true;
-            g_banCode = e.code;
-        },
-        .onLog = [](const bigbro::LogEvent&) {},
-        .flags = flags,
-    }) == 0;
+    uint32_t flags = FLAG_NONE;
+    if (useFilesystem) flags |= FLAG_USE_FS_RULES;
+    if (noBgThread) flags |= FLAG_NO_BG_THREAD;
+    if (g_dll.SetBanCb) g_dll.SetBanCb(BanCallback);
+    if (g_dll.SetLogCb) g_dll.SetLogCb(LogCallback);
+    return g_dll.Init(flags, "bigbro-default-key", rulesDir) == 0;
 }
-
-// ============================================================
-// Example custom component for testing
-// ============================================================
-class TestComponent final : public bigbro::Component {
-public:
-    bool initCalled = false;
-    bool tickCalled = false;
-    bool shutdownCalled = false;
-
-    const char* GetName() const override { return "Test::Component"; }
-    void OnInit() override { initCalled = true; }
-    void OnTick() override { tickCalled = true; }
-    void OnShutdown() override { shutdownCalled = true; }
-};
 
 // ============================================================
 // INDIVIDUAL TESTS
@@ -97,80 +127,65 @@ static int TestLegacyExports() {
     if (!LoadDll()) return 1;
     if (!g_dll.RunFull) return 2;
     if (!g_dll.Tamper) return 3;
-    if (!g_dll.LegacyBanned) return 4;
+    if (!g_dll.IsBanned) return 4;
+    return 0;
+}
+
+static int TestNewApiExports() {
+    if (!LoadDll()) return 1;
+    if (!g_dll.Init) return 2;
+    if (!g_dll.Tick) return 3;
+    if (!g_dll.Shutdown) return 4;
+    if (!g_dll.IsBanned) return 5;
+    if (!g_dll.SetBanCb) return 6;
+    if (!g_dll.SetLogCb) return 7;
+    if (!g_dll.LoadRule) return 8;
+    if (!g_dll.ProtectVar) return 9;
+    if (!g_dll.UnprotectVar) return 10;
+    if (!g_dll.UpdateProtectVar) return 11;
     return 0;
 }
 
 static int TestInitShutdown() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return 0;
 }
 
 static int TestCleanTick() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    int result = bigbro::SDK::Get().Tick();
-    bigbro::SDK::Get().Shutdown();
+    int result = g_dll.Tick();
+    g_dll.Shutdown();
     return (result == 0) ? 0 : 1;
 }
 
 static int TestJSEngine() {
     if (!LoadDll()) return 1;
-    // Default: loads from embedded AES-encrypted VFS
     if (!InitSDK()) return 2;
-    int result = bigbro::SDK::Get().Tick();
-    bigbro::SDK::Get().Shutdown();
+    int result = g_dll.Tick();
+    g_dll.Shutdown();
     return (result == 0) ? 0 : 1;
-}
-
-static int TestComponentLifecycle() {
-    if (!LoadDll()) return 1;
-    auto comp = make_shared<TestComponent>();
-    bigbro::SDK::Get().Components().Register(comp);
-    if (!InitSDK()) return 2;
-    if (!comp->initCalled) return 3;
-    bigbro::SDK::Get().Tick();
-    if (!comp->tickCalled) return 4;
-    bigbro::SDK::Get().Shutdown();
-    if (!comp->shutdownCalled) return 5;
-    return 0;
-}
-
-static int TestComponentRegistry() {
-    if (!LoadDll()) return 1;
-    auto comp = make_shared<TestComponent>();
-    auto& reg = bigbro::SDK::Get().Components();
-    reg.Register(comp);
-    // Find by name
-    if (!reg.Find("Test::Component")) return 2;
-    // Find by type
-    if (!reg.Find<TestComponent>()) return 3;
-    // Count
-    if (reg.Count() < 1) return 4;
-    bigbro::SDK::Get().Init({});
-    bigbro::SDK::Get().Shutdown();
-    return 0;
 }
 
 static int TestBanCallback() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
     g_dll.Tamper();
-    bigbro::SDK::Get().Tick();
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Tick();
+    g_dll.Shutdown();
     return g_banFired ? 0 : 1;
 }
 
 static int TestSelfTamper() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
     g_dll.Tamper();
-    bigbro::SDK::Get().Tick();
-    bool banned = bigbro::SDK::Get().IsBanned();
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Tick();
+    bool banned = g_dll.IsBanned() != 0;
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
@@ -195,122 +210,101 @@ static int TestXorStr() {
 static int TestRuleLoading() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    int ret = bigbro::SDK::Get().LoadRule("./rules/check_debugger.js");
-    bigbro::SDK::Get().Shutdown();
+    int ret = g_dll.LoadRule("./rules/check_debugger.js");
+    g_dll.Shutdown();
     return (ret == 0) ? 0 : 1;
 }
 
 static int TestRetpoline() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    bigbro::SDK::Get().Tick();
-    if (bigbro::SDK::Get().IsBanned()) return 3;
-    bigbro::SDK::Get().Tick();
-    bool ok = !bigbro::SDK::Get().IsBanned();
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Tick();
+    if (g_dll.IsBanned()) return 3;
+    g_dll.Tick();
+    bool ok = !g_dll.IsBanned();
+    g_dll.Shutdown();
     return ok ? 0 : 1;
 }
 
 static int TestTlsCallback() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    bool banned = bigbro::SDK::Get().IsBanned();
-    bigbro::SDK::Get().Shutdown();
+    bool banned = g_dll.IsBanned() != 0;
+    g_dll.Shutdown();
     return banned ? 1 : 0;
 }
 
-// --- Test: Direct Syscall Infrastructure ---
 static int TestSyscalls() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    // After Init, syscall numbers should be resolved
-    // We verify by running a clean tick (which uses detection infrastructure)
-    bigbro::SDK::Get().Tick();
-    bool ok = !bigbro::SDK::Get().IsBanned();
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Tick();
+    bool ok = !g_dll.IsBanned();
+    g_dll.Shutdown();
     return ok ? 0 : 1;
 }
 
-// --- Test: Shadow State detects external tampering ---
 static int TestShadowState() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    // First tick - establishes shadow
-    bigbro::SDK::Get().Tick();
-    if (bigbro::SDK::Get().IsBanned()) { bigbro::SDK::Get().Shutdown(); return 3; }
-
-    // Simulate external tampering: flip g_banned to true via
-    // our own process memory (this simulates WriteProcessMemory attack)
-    // The shadow state should detect this on next Tick
-    // NOTE: We can't easily test this without exporting g_banned address.
-    // Instead, verify that two clean ticks don't false-positive.
-    bigbro::SDK::Get().Tick();
-    bool stillClean = !bigbro::SDK::Get().IsBanned();
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Tick();
+    if (g_dll.IsBanned()) { g_dll.Shutdown(); return 3; }
+    g_dll.Tick();
+    bool stillClean = !g_dll.IsBanned();
+    g_dll.Shutdown();
     return stillClean ? 0 : 1;
 }
 
-// --- Test: IAT Hook Detection (clean) ---
 static int TestIatDetection() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    // Run multiple ticks - IAT should be consistent → no ban
     for (int i = 0; i < 3; i++) {
-        bigbro::SDK::Get().Tick();
-        if (bigbro::SDK::Get().IsBanned()) { bigbro::SDK::Get().Shutdown(); return 3; }
+        g_dll.Tick();
+        if (g_dll.IsBanned()) { g_dll.Shutdown(); return 3; }
     }
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return 0;
 }
 
-// --- Test: Thread Watchdog heartbeat ---
 static int TestThreadWatchdog() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    // Multiple ticks - heartbeat should advance, no ban
     for (int i = 0; i < 5; i++) {
-        bigbro::SDK::Get().Tick();
-        if (bigbro::SDK::Get().IsBanned()) { bigbro::SDK::Get().Shutdown(); return 3; }
+        g_dll.Tick();
+        if (g_dll.IsBanned()) { g_dll.Shutdown(); return 3; }
     }
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return 0;
 }
 
-// --- Test: Protected Variable API ---
 static int TestProtectedVariable() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
 
-    // Register a variable for protection
     int health = 100;
-    bigbro::SDK::Get().ProtectVariable("health", &health, sizeof(health));
+    g_dll.ProtectVar("health", &health, sizeof(health));
 
-    // Tick - shadow should match
-    bigbro::SDK::Get().Tick();
-    if (bigbro::SDK::Get().IsBanned()) { bigbro::SDK::Get().Shutdown(); return 3; }
+    g_dll.Tick();
+    if (g_dll.IsBanned()) { g_dll.Shutdown(); return 3; }
 
-    // Legitimate change + sync
     health = 80;
-    bigbro::SDK::Get().UpdateProtectedVariable("health");
-    bigbro::SDK::Get().Tick();
-    if (bigbro::SDK::Get().IsBanned()) { bigbro::SDK::Get().Shutdown(); return 4; }
+    g_dll.UpdateProtectVar("health");
+    g_dll.Tick();
+    if (g_dll.IsBanned()) { g_dll.Shutdown(); return 4; }
 
-    // Unprotect and verify cleanup
-    bigbro::SDK::Get().UnprotectVariable("health");
-    bigbro::SDK::Get().Tick();
-    if (bigbro::SDK::Get().IsBanned()) { bigbro::SDK::Get().Shutdown(); return 5; }
+    g_dll.UnprotectVar("health");
+    g_dll.Tick();
+    if (g_dll.IsBanned()) { g_dll.Shutdown(); return 5; }
 
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return 0;
 }
 
 // ============================================================
-// TEST: JS Bindings — verifies each new binding returns valid data
+// TEST: JS Bindings
 // ============================================================
 static int TestJsBindings() {
     if (!LoadDll()) return 1;
 
-    // Write a temp JS rule that exercises all bindings
     const char* testRulePath = "./rules/__test_bindings.js";
     {
         FILE* f = fopen(testRulePath, "w");
@@ -342,11 +336,11 @@ static int TestJsBindings() {
     }
 
     if (!InitSDK("./rules", true)) { remove(testRulePath); return 3; }
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
 
     bool banned = g_banFired;
     uint32_t code = g_banCode;
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     remove(testRulePath);
 
     if (banned) return (int)(code & 0xFF);
@@ -354,27 +348,27 @@ static int TestJsBindings() {
 }
 
 // ============================================================
-// TEST: ProtectedVariable TAMPER → must fire ban
+// TEST: ProtectedVariable TAMPER
 // ============================================================
 static int TestProtectedVarTamper() {
     if (!LoadDll()) return 1;
     if (!InitSDK(nullptr, false)) return 2;
 
     int health = 100;
-    bigbro::SDK::Get().ProtectVariable("health", &health, sizeof(health));
-    bigbro::SDK::Get().Tick();
-    if (bigbro::SDK::Get().IsBanned()) { bigbro::SDK::Get().Shutdown(); return 3; }
+    g_dll.ProtectVar("health", &health, sizeof(health));
+    g_dll.Tick();
+    if (g_dll.IsBanned()) { g_dll.Shutdown(); return 3; }
 
-    // TAMPER: change without UpdateProtectedVariable → must ban
+    // TAMPER: change without update → must ban
     health = 9999;
-    bigbro::SDK::Get().Tick();
-    bool banned = bigbro::SDK::Get().IsBanned();
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Tick();
+    bool banned = g_dll.IsBanned() != 0;
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
 // ============================================================
-// TEST: JS Rule fires ban → callback must receive it
+// TEST: JS Rule fires ban
 // ============================================================
 static int TestJsRuleBan() {
     if (!LoadDll()) return 1;
@@ -388,11 +382,11 @@ static int TestJsRuleBan() {
     }
 
     if (!InitSDK("./rules", true)) { remove(banRulePath); return 3; }
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
 
     bool banned = g_banFired;
     uint32_t code = g_banCode;
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     remove(banRulePath);
 
     if (!banned) return 1;
@@ -409,10 +403,10 @@ static int TestBlacklistedWindow() {
     if (!InitSDK(nullptr, false)) return 2;
     HWND hwnd = CreateWindowA("STATIC", "Cheat Engine", 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL);
     if (!hwnd) return 3;
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
     bool banned = g_banFired;
     DestroyWindow(hwnd);
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
@@ -422,10 +416,10 @@ static int TestDebuggerFlag() {
     auto* peb = (BYTE*)__readgsqword(0x60);
     BYTE original = peb[2];
     peb[2] = 1; // BeingDebugged = true
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
     bool banned = g_banFired;
     peb[2] = original;
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
@@ -444,11 +438,11 @@ static int TestHardwareBreakpoint() {
         SetThreadContext(hThread, &ctx);
         ResumeThread(hThread);
     }
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
     bool banned = g_banFired;
     if (hThread) { SetEvent(hEvent); WaitForSingleObject(hThread, 2000); CloseHandle(hThread); }
     CloseHandle(hEvent);
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
@@ -464,20 +458,20 @@ static int TestNtapiHook() {
     VirtualProtect(pFunc, 5, PAGE_EXECUTE_READWRITE, &oldProt);
     pFunc[0] = 0xE9; *(DWORD*)(pFunc + 1) = 0; // JMP rel32
     VirtualProtect(pFunc, 5, oldProt, &oldProt);
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
     bool banned = g_banFired;
     VirtualProtect(pFunc, 5, PAGE_EXECUTE_READWRITE, &oldProt);
     memcpy(pFunc, saved, 5); // Restore
     VirtualProtect(pFunc, 5, oldProt, &oldProt);
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
 static int TestIatHook() {
     if (!LoadDll()) return 1;
     if (!InitSDK(nullptr, false)) return 2;
-    bigbro::SDK::Get().Tick(); // Establish baseline
-    if (bigbro::SDK::Get().IsBanned()) { bigbro::SDK::Get().Shutdown(); return 3; }
+    g_dll.Tick(); // Establish baseline
+    if (g_dll.IsBanned()) { g_dll.Shutdown(); return 3; }
     HMODULE hMod = GetModuleHandleA("bigbro.dll");
     if (!hMod) return 4;
     auto* dos = (IMAGE_DOS_HEADER*)hMod;
@@ -486,7 +480,6 @@ static int TestIatHook() {
     if (!importDir.VirtualAddress) return 5;
     auto* importDesc = (IMAGE_IMPORT_DESCRIPTOR*)((BYTE*)hMod + importDir.VirtualAddress);
     uintptr_t saved = 0; uintptr_t* pThunk = nullptr;
-    // Find the LAST thunk (least likely actively called during Tick)
     for (; importDesc->Name; importDesc++) {
         auto* thunk = (IMAGE_THUNK_DATA*)((BYTE*)hMod + importDesc->FirstThunk);
         for (; thunk->u1.Function; thunk++) {
@@ -501,13 +494,13 @@ static int TestIatHook() {
     *pThunk = (uintptr_t)fake;
     VirtualProtect(pThunk, 8, op, &op);
     g_banFired = false; g_banCode = 0;
-    __try { bigbro::SDK::Get().Tick(); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    __try { g_dll.Tick(); } __except(EXCEPTION_EXECUTE_HANDLER) {}
     bool banned = g_banFired;
     VirtualProtect(pThunk, 8, PAGE_READWRITE, &op);
     *pThunk = saved;
     VirtualProtect(pThunk, 8, op, &op);
     VirtualFree(fake, 0, MEM_RELEASE);
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
@@ -518,20 +511,17 @@ static int TestIatHook() {
 static int TestManualMapDetection() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    bigbro::SDK::Get().Tick(); // establish baselines
-    if (g_banFired) return 3; // clean tick must not ban
+    g_dll.Tick();
+    if (g_banFired) return 3;
 
-    // Allocate executable memory with fake PE header
     void* mem = VirtualAlloc(NULL, 0x2000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!mem) return 4;
     auto* base = (BYTE*)mem;
-    // Write MZ header
     base[0] = 'M'; base[1] = 'Z';
     auto* dos = (IMAGE_DOS_HEADER*)base;
     dos->e_lfanew = 0x80;
-    // Write PE signature at e_lfanew
     auto* pe = (DWORD*)(base + 0x80);
-    *pe = IMAGE_NT_SIGNATURE; // "PE\0\0"
+    *pe = IMAGE_NT_SIGNATURE;
 
     g_banFired = false;
     if (!g_dll.HeavyChecks) return 5;
@@ -539,20 +529,18 @@ static int TestManualMapDetection() {
     bool banned = g_banFired && (g_banCode == 0xA018);
 
     VirtualFree(mem, 0, MEM_RELEASE);
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
 static int TestNtdllMassHook() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    bigbro::SDK::Get().Tick(); // clean tick
+    g_dll.Tick();
     if (g_banFired) return 3;
 
-    // Patch 6 rarely-called ntdll Nt* syscall stubs with JMP detour signature
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
     if (!ntdll) return 4;
-    // Use functions NOT called during VirtualQuery/scan to avoid hang
     const char* targets[] = {
         "NtLoadDriver", "NtUnloadDriver", "NtLockVirtualMemory",
         "NtUnlockVirtualMemory", "NtCreateToken", "NtOpenProcessToken",
@@ -568,7 +556,7 @@ static int TestNtdllMassHook() {
         saved[patched].addr = p;
         memcpy(saved[patched].bytes, p, 5);
         VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &saved[patched].prot);
-        p[0] = 0xE9; *(int32_t*)(p + 1) = 0x7FFFF; // JMP far forward (detour signature)
+        p[0] = 0xE9; *(int32_t*)(p + 1) = 0x7FFFF;
         patched++;
     }
     if (patched < 5) {
@@ -578,80 +566,70 @@ static int TestNtdllMassHook() {
             memcpy(saved[i].addr, saved[i].bytes, 5);
             VirtualProtect(saved[i].addr, 5, saved[i].prot, &tmp);
         }
-        bigbro::SDK::Get().Shutdown();
+        g_dll.Shutdown();
         return 5;
     }
 
     g_banFired = false;
-    if (!g_dll.HeavyChecks) { bigbro::SDK::Get().Shutdown(); return 6; }
+    if (!g_dll.HeavyChecks) { g_dll.Shutdown(); return 6; }
     __try { g_dll.HeavyChecks(); } __except(EXCEPTION_EXECUTE_HANDLER) {}
     bool banned = g_banFired && (g_banCode == 0xA019);
 
-    // Restore ALL stubs immediately
     for (int i = 0; i < patched; i++) {
         DWORD tmp;
         VirtualProtect(saved[i].addr, 5, PAGE_EXECUTE_READWRITE, &tmp);
         memcpy(saved[i].addr, saved[i].bytes, 5);
         VirtualProtect(saved[i].addr, 5, saved[i].prot, &tmp);
     }
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
 static int TestAntiSuspend() {
     if (!LoadDll()) return 1;
-    // Start WITH bg thread (noBgThread=false)
     if (!InitSDK(nullptr, false, false)) return 2;
     if (!g_dll.BgThreadId) return 3;
-    Sleep(500); // Let bg thread start and heartbeat a few times
+    Sleep(500);
 
-    // Get bg thread handle via exported thread ID
     DWORD bgTid = g_dll.BgThreadId();
-    if (!bgTid) { bigbro::SDK::Get().Shutdown(); return 4; }
+    if (!bgTid) { g_dll.Shutdown(); return 4; }
     HANDLE hBg = OpenThread(THREAD_SUSPEND_RESUME, FALSE, bgTid);
-    if (!hBg) { bigbro::SDK::Get().Shutdown(); return 5; }
+    if (!hBg) { g_dll.Shutdown(); return 5; }
 
     SuspendThread(hBg);
     Sleep(200);
 
-    // Tick multiple times — anti-suspend should count heartbeat misses
     g_banFired = false;
     for (int i = 0; i < 10; i++) {
-        bigbro::SDK::Get().Tick();
+        g_dll.Tick();
         Sleep(50);
     }
-    bool banned = g_banFired; // any ban from anti-suspend
+    bool banned = g_banFired;
 
     ResumeThread(hBg);
     CloseHandle(hBg);
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
-// --- Test: MZ-less manual-map detection (Fix #3) ---
 static int TestManualMapNoHeader() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    bigbro::SDK::Get().Tick(); // establish baselines
+    g_dll.Tick();
     if (g_banFired) return 3;
 
-    // Simulate headerless manual-mapped PE: multi-region allocation with
-    // mixed permissions (RX + RW) from same AllocationBase — like a real PE
-    // with .text (RX) and .data (RW) sections but erased MZ header.
     void* base = VirtualAlloc(NULL, 0x40000, MEM_RESERVE, PAGE_NOACCESS);
     if (!base) return 4;
 
-    // Region 1: .text — commit as RW, fill, then protect as RX
     void* text = VirtualAlloc(base, 0x20000, MEM_COMMIT, PAGE_READWRITE);
     if (!text) { VirtualFree(base, 0, MEM_RELEASE); return 5; }
-    memset(text, 0xCC, 0x20000); // INT3 fill (looks like code)
+    memset(text, 0xCC, 0x20000);
     DWORD oldProt;
     VirtualProtect(text, 0x20000, PAGE_EXECUTE_READ, &oldProt);
 
-    // Region 2: .data — PAGE_READWRITE (data section)
     void* data = VirtualAlloc((BYTE*)base + 0x20000, 0x10000, MEM_COMMIT, PAGE_READWRITE);
     if (!data) { VirtualFree(base, 0, MEM_RELEASE); return 6; }
-    memset(data, 0x41, 0x10000); // 'A' fill (looks like data)
+    memset(data, 0x41, 0x10000);
 
     g_banFired = false;
     if (!g_dll.HeavyChecks) { VirtualFree(base, 0, MEM_RELEASE); return 7; }
@@ -659,33 +637,29 @@ static int TestManualMapNoHeader() {
     bool banned = g_banFired && (g_banCode == 0xA01C);
 
     VirtualFree(base, 0, MEM_RELEASE);
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
-// --- Test: ProcessDebugPort clean check (Fix #4) ---
 static int TestDebugPort() {
     if (!LoadDll()) return 1;
     if (!InitSDK(nullptr, false)) return 2;
-    // Clean environment — no debugger → should not ban
-    bigbro::SDK::Get().Tick();
-    bool banned = bigbro::SDK::Get().IsBanned();
-    bigbro::SDK::Get().Shutdown();
-    return banned ? 1 : 0; // expect clean
+    g_dll.Tick();
+    bool banned = g_dll.IsBanned() != 0;
+    g_dll.Shutdown();
+    return banned ? 1 : 0;
 }
 
-// --- Test: BG thread kill detection (Fix #5) ---
 static int TestBgThreadKill() {
     if (!LoadDll()) return 1;
-    // Start WITH bg thread
     if (!InitSDK(nullptr, false, false)) return 2;
     if (!g_dll.BgThreadId) return 3;
     Sleep(500);
 
     DWORD bgTid = g_dll.BgThreadId();
-    if (!bgTid) { bigbro::SDK::Get().Shutdown(); return 4; }
+    if (!bgTid) { g_dll.Shutdown(); return 4; }
     HANDLE hBg = OpenThread(THREAD_TERMINATE, FALSE, bgTid);
-    if (!hBg) { bigbro::SDK::Get().Shutdown(); return 5; }
+    if (!hBg) { g_dll.Shutdown(); return 5; }
 
     TerminateThread(hBg, 0);
     CloseHandle(hBg);
@@ -693,15 +667,14 @@ static int TestBgThreadKill() {
 
     g_banFired = false;
     for (int i = 0; i < 5; i++) {
-        bigbro::SDK::Get().Tick();
+        g_dll.Tick();
         Sleep(50);
     }
     bool banned = g_banFired;
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     return banned ? 0 : 1;
 }
 
-// --- Test: Syscall whitelist enforcement (Fix #2) ---
 static int TestSyscallWhitelist() {
     if (!LoadDll()) return 1;
 
@@ -709,8 +682,6 @@ static int TestSyscallWhitelist() {
     {
         FILE* f = fopen(testRulePath, "w");
         if (!f) return 2;
-        // NtTerminateProcess = syscall number varies, use 0x2C (typical)
-        // This should NOT be whitelisted → should ban
         fprintf(f, "%s",
             "var r = native.syscall(0x2C, -1, 0, 0, 0, 0, 0);\n"
             "// If we get here without ban, the whitelist failed\n"
@@ -719,27 +690,25 @@ static int TestSyscallWhitelist() {
     }
 
     if (!InitSDK("./rules", true)) { remove(testRulePath); return 3; }
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
 
     bool banned = g_banFired;
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     remove(testRulePath);
 
-    return banned ? 0 : 1; // expect ban for non-whitelisted syscall
+    return banned ? 0 : 1;
 }
 
 // ============================================================
-// NEGATIVE (CLEAN) TESTS — verify no false positives
+// NEGATIVE (CLEAN) TESTS
 // ============================================================
 
-// --- Clean: flat RWX allocation (JIT-like) must NOT trigger ban ---
 static int TestCleanNoHeader() {
     if (!LoadDll()) return 1;
     if (!InitSDK()) return 2;
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
     if (g_banFired) return 3;
 
-    // Single flat RWX allocation — looks like JIT, should be safe
     void* jit = VirtualAlloc(NULL, 0x20000, MEM_COMMIT | MEM_RESERVE,
                              PAGE_EXECUTE_READWRITE);
     if (!jit) return 4;
@@ -751,11 +720,10 @@ static int TestCleanNoHeader() {
     bool banned = g_banFired && (g_banCode == 0xA01C);
 
     VirtualFree(jit, 0, MEM_RELEASE);
-    bigbro::SDK::Get().Shutdown();
-    return banned ? 1 : 0; // expect NO ban (0xA01C)
+    g_dll.Shutdown();
+    return banned ? 1 : 0;
 }
 
-// --- Clean: whitelisted syscall must NOT ban ---
 static int TestCleanWhitelist() {
     if (!LoadDll()) return 1;
 
@@ -763,7 +731,6 @@ static int TestCleanWhitelist() {
     {
         FILE* f = fopen(testRulePath, "w");
         if (!f) return 2;
-        // NtQueryInformationProcess (0x19) IS whitelisted — should work
         fprintf(f, "%s",
             "var r = native.syscall(0x19, -1, 7, 0, 8, 0);\n"
             "if (r === null || typeof r.status !== 'number') {\n"
@@ -775,43 +742,40 @@ static int TestCleanWhitelist() {
     }
 
     if (!InitSDK("./rules", true)) { remove(testRulePath); return 3; }
-    bigbro::SDK::Get().Tick();
+    g_dll.Tick();
 
     bool banned = g_banFired;
-    bigbro::SDK::Get().Shutdown();
+    g_dll.Shutdown();
     remove(testRulePath);
 
-    return banned ? 1 : 0; // expect NO ban
+    return banned ? 1 : 0;
 }
 
-// --- Clean: healthy bg thread must NOT trigger kill detection ---
 static int TestCleanBgThread() {
     if (!LoadDll()) return 1;
-    if (!InitSDK(nullptr, false, false)) return 2; // bg thread enabled
-    Sleep(500); // let bg thread start
+    if (!InitSDK(nullptr, false, false)) return 2;
+    Sleep(500);
 
     g_banFired = false;
     for (int i = 0; i < 5; i++) {
-        bigbro::SDK::Get().Tick();
+        g_dll.Tick();
         Sleep(50);
     }
     bool banned = g_banFired && (g_banCode == 0xA01E);
-    bigbro::SDK::Get().Shutdown();
-    return banned ? 1 : 0; // expect NO ban (0xA01E)
+    g_dll.Shutdown();
+    return banned ? 1 : 0;
 }
 
-// --- Clean: no VEH injection must NOT trigger VEH detection ---
 static int TestCleanVeh() {
     if (!LoadDll()) return 1;
     if (!InitSDK(nullptr, false)) return 2;
-    // Just tick normally — no VEH handlers added
     g_banFired = false;
     for (int i = 0; i < 3; i++) {
-        bigbro::SDK::Get().Tick();
+        g_dll.Tick();
     }
-    bool banned = bigbro::SDK::Get().IsBanned();
-    bigbro::SDK::Get().Shutdown();
-    return banned ? 1 : 0; // expect clean
+    bool banned = g_dll.IsBanned() != 0;
+    g_dll.Shutdown();
+    return banned ? 1 : 0;
 }
 
 //
@@ -820,11 +784,10 @@ static int TestCleanVeh() {
 static int RunSingleTest(const string& n) {
     if (n == "dll_load")       return TestDllLoad();
     if (n == "legacy")         return TestLegacyExports();
+    if (n == "new_api")        return TestNewApiExports();
     if (n == "init_shutdown")  return TestInitShutdown();
     if (n == "clean_tick")     return TestCleanTick();
     if (n == "js_engine")      return TestJSEngine();
-    if (n == "component_life") return TestComponentLifecycle();
-    if (n == "component_reg")  return TestComponentRegistry();
     if (n == "ban_callback")   return TestBanCallback();
     if (n == "self_tamper")    return TestSelfTamper();
     if (n == "xorstr")         return TestXorStr();
@@ -888,28 +851,27 @@ int main(int argc, char* argv[]) {
     if (argc >= 3 && string(argv[1]) == "--test")
         return RunSingleTest(argv[2]);
 
-    cout << "=== BigBro SDK Validation Suite ===\n";
-    cout << "======================================\n\n";
+    cout << "=== BigBro SDK Validation Suite ===" << endl;
+    cout << "======================================\n" << endl;
 
     vector<TestCase> tests = {
         {"dll_load",       "DLL Loading",                          false},
-        {"legacy",         "Legacy C Exports (backward compat)",   false},
-        {"init_shutdown",  "SDK::Init + SDK::Shutdown",            false},
+        {"legacy",         "Legacy C Exports (ordinal compat)",    false},
+        {"new_api",        "New C API Exports (@7-@16)",           false},
+        {"init_shutdown",  "Init + Shutdown (C API)",              false},
         {"tls_callback",   "TLS Callback (early init)",            false},
         {"clean_tick",     "Clean Tick (native only)",             false},
         {"js_engine",      "JS Engine + Rule Execution",           false},
         {"rule_loading",   "Runtime Rule Loading",                 false},
-        {"component_reg",  "ComponentRegistry (Register/Find<T>)", false},
-        {"component_life", "Component Lifecycle (Init/Tick/Stop)", false},
         {"retpoline",      "Retpoline Dispatch (Spectre v2)",      false},
         {"xorstr",         "XorStr Obfuscation (string scan)",     false},
-        {"ban_callback",   "Ban Callback (function)",         false},
+        {"ban_callback",   "Ban Callback (function)",              false},
         {"self_tamper",    "Self-Tamper Watchdog (.bigdata)",       false},
         {"syscalls",       "Direct Syscall Infrastructure",        false},
         {"shadow_state",   "Shadow State Integrity",               false},
         {"iat_detect",     "IAT Hook Detection (clean)",           false},
         {"thread_watchdog","Thread Watchdog Heartbeat",            false},
-        {"protect_var",    "ProtectVariable API",                  false},
+        {"protect_var",    "ProtectVariable API (C API)",          false},
         {"js_bindings",    "JS Syscall Bindings (native.syscall)", false},
         {"var_tamper",     "ProtectVar Tamper Detection (ban+)",   false},
         {"js_rule_ban",    "JS Rule Ban Propagation (ban+)",       false},
