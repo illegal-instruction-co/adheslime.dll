@@ -4,7 +4,9 @@
 #include "Syscalls.h"
 
 static atomic<uint32_t> g_timingViolations{0};
-static constexpr uint32_t kTimingViolationThreshold = 8;
+static constexpr uint32_t kTimingViolationThreshold = 24;
+
+recursive_mutex g_detectionMutex;
 
 static __forceinline void RecordTimingViolation(uint32_t code, const char* reason) {
     uint32_t count = g_timingViolations.fetch_add(1, memory_order_relaxed) + 1;
@@ -23,57 +25,50 @@ __declspec(noinline) static void RaiseExceptionWrapper() {
 }
 
 static void Detect_IsDebuggerPresent() {
-    DETECT_BEGIN
     auto pIsDbg = Stealth::Resolve<BOOL(WINAPI*)()>(X("kernel32.dll").c_str(), X("IsDebuggerPresent").c_str());
     if (pIsDbg && pIsDbg()) InternalBan(OBF_U32(0xA00A), X("debugger_present").c_str());
-    DETECT_END;
 }
 
 static void Detect_DebuggerLatency() {
-    DETECT_BEGIN
     auto start = chrono::high_resolution_clock::now();
     RaiseExceptionWrapper();
     auto end = chrono::high_resolution_clock::now();
     auto ms = (uint32_t)chrono::duration_cast<chrono::milliseconds>(end - start).count();
-    if (ObfCmpGtU32(ms, OBF_U32(200)))
+    if (ms > OBF_U32(200))
         RecordTimingViolation(OBF_U32(0xA001), X("debugger_latency").c_str());
-    DETECT_END;
 }
 
 static void Detect_TimingAnomaly() {
-    DETECT_BEGIN
+    if (g_tickThreadId.load(memory_order_relaxed) != GetCurrentThreadId()) return;
+
     static constexpr uintptr_t kUserSharedData = 0x7FFE0000;
-    volatile int64_t* pSysTime = (int64_t*)(kUserSharedData + OBF_PTR(0x320));
-    int64_t t1 = *pSysTime;
-    this_thread::sleep_for(chrono::milliseconds(OBF_I32(10)));
-    int64_t t2 = *pSysTime;
+    volatile int64_t* pTime = (int64_t*)(kUserSharedData + 0x08);
+    int64_t t1 = *pTime;
+    this_thread::sleep_for(chrono::milliseconds(10));
+    int64_t t2 = *pTime;
     int64_t diff100ns = t2 - t1;
-    if (ObfCmpLtI64(diff100ns, OBF_I64(20000)))
+
+    if (diff100ns < OBF_I64(20000))
         RecordTimingViolation(OBF_U32(0xA002), X("timing_anomaly").c_str());
-    DETECT_END;
 }
 
 static void Detect_QPCAnomaly() {
-    DETECT_BEGIN
     LARGE_INTEGER freq, start, end;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&start);
-    this_thread::sleep_for(chrono::milliseconds(OBF_I32(5)));
+    this_thread::sleep_for(chrono::milliseconds(5));
     QueryPerformanceCounter(&end);
     double elapsed = (double)(end.QuadPart - start.QuadPart) / freq.QuadPart * 1000.0;
-    if (ObfCmpGtDbl(elapsed, (double)OBF_U32(200)))
+    if (elapsed > (double)OBF_U32(200))
         RecordTimingViolation(OBF_U32(0xA00B), X("qpc_anomaly").c_str());
-    DETECT_END;
 }
 
 static void Detect_TickAnomaly() {
-    DETECT_BEGIN
     DWORD t1 = GetTickCount();
-    this_thread::sleep_for(chrono::milliseconds(OBF_I32(5)));
+    this_thread::sleep_for(chrono::milliseconds(5));
     DWORD t2 = GetTickCount();
-    if (ObfCmpGtU32(t2 - t1, OBF_DWORD(200)))
+    if (t2 - t1 > OBF_DWORD(200))
         RecordTimingViolation(OBF_U32(0xA00C), X("tick_anomaly").c_str());
-    DETECT_END;
 }
 
 static void Detect_ThreadsAndHWBP() {
@@ -458,7 +453,7 @@ static void Detect_NtdllFullScan() {
     int hookedCount = 0;
     for (DWORD i = 0; i < exports->NumberOfNames; i++) {
         const char* name = (const char*)((BYTE*)hNtdll + names[i]);
-        if (name[0] != 'N' || name[1] != 't') continue;
+        if (name[0] != 'N' || name[1] != 't' || name[2] < 'A' || name[2] > 'Z') continue;
 
         const BYTE* p = (const BYTE*)hNtdll + funcs[ords[i]];
 
@@ -467,25 +462,19 @@ static void Detect_NtdllFullScan() {
             continue;
         }
 
-
         if (p[0] == 0xE9 || (p[0] == 0xFF && p[1] == 0x25) ||
             (p[0] == 0x48 && p[1] == 0xB8 && p[10] == 0xFF && p[11] == 0xE0)) {
-
-            DWORD rva = funcs[ords[i]];
-            if (rva < nt->OptionalHeader.SizeOfImage) {
-                hookedCount++;
-            }
+            hookedCount++;
         }
     }
 
-    if (syscallCount > 10 && hookedCount >= 5) {
+    if (syscallCount > 20 && hookedCount >= 5) {
         InternalBan(0xA019, X("ntdll_mass_hook").c_str());
     }
 }
 
 
 static void Detect_ProcessDebugPort() {
-    DETECT_BEGIN
     DWORD64 debugPort = 0;
     NTSTATUS status = DirectNtQueryInformationProcess(
         GetCurrentProcess(), 7 /* ProcessDebugPort */,
@@ -493,7 +482,6 @@ static void Detect_ProcessDebugPort() {
     if (status == 0 && debugPort != 0) {
         InternalBan(OBF_U32(0xA01D), X("debug_port_detected").c_str());
     }
-    DETECT_END;
 }
 
 
@@ -537,19 +525,19 @@ atomic<uint64_t> g_bgHeartbeat{0};
 static void Detect_AntiSuspend() {
     if (!g_bgThread.joinable()) return;
 
-    static uint64_t lastSeen = 0;
-    static int missCount = 0;
+    static atomic<uint64_t> lastSeen{0};
+    static atomic<int> missCount{0};
 
     uint64_t current = g_bgHeartbeat.load(memory_order_relaxed);
-    if (lastSeen == current && lastSeen > 0) {
-        missCount++;
-        if (missCount >= 5) {
+    uint64_t prev = lastSeen.load(memory_order_relaxed);
+    if (prev == current && prev > 0) {
+        if (missCount.fetch_add(1, memory_order_relaxed) + 1 >= 5) {
             InternalBan(0xA01A, X("bg_thread_suspended").c_str());
         }
     } else {
-        missCount = 0;
+        missCount.store(0, memory_order_relaxed);
     }
-    lastSeen = current;
+    lastSeen.store(current, memory_order_relaxed);
 }
 
 #pragma section(".bigdata", read)
@@ -602,6 +590,7 @@ void CaptureDetectionBaselines() {
 
 void RunNativeChecks() {
     if (g_config.flags & bigbro::Flag::NoNative) return;
+    lock_guard<recursive_mutex> lock(g_detectionMutex);
     Detect_DispatchWatchdog();
     for (size_t i = 0; i < kDispatchCount; i++) {
         if (g_nativeDispatch[i]) RetpolineDispatch(g_nativeDispatch[i]);
@@ -610,6 +599,7 @@ void RunNativeChecks() {
 
 void RunHeavyChecks() {
     if (g_config.flags & bigbro::Flag::NoNative) return;
+    lock_guard<recursive_mutex> lock(g_detectionMutex);
     Detect_ManualMap();
     Detect_NtdllFullScan();
 }

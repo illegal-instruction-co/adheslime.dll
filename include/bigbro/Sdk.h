@@ -220,6 +220,10 @@ extern "C" {
     void  BigBro_UnprotectVariable(const char* name);       // @15
     void  BigBro_UpdateProtectedVariable(const char* name); // @16
 
+    // DLL attestation (ECDSA P-256)
+    int   BigBro_Challenge(const uint8_t* nonce, uint32_t nonceLen,
+                           uint8_t* sigOut, uint32_t sigBufLen);  // @17
+
     // Legacy compat
     void  RunFullSuite();                                   // @1
     int   IsUserBanned();                                   // @2

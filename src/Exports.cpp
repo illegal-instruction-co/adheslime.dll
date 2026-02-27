@@ -106,6 +106,13 @@ uint32_t GetBgThreadId() {
     return (uint32_t)GetThreadId(g_bgThread.native_handle());
 }
 
+extern int BigBro_Challenge_Impl(const uint8_t* nonce, uint32_t nonceLen,
+                                  uint8_t* sigOut, uint32_t sigBufLen);
+int BigBro_Challenge(const uint8_t* nonce, uint32_t nonceLen,
+                     uint8_t* sigOut, uint32_t sigBufLen) {
+    return BigBro_Challenge_Impl(nonce, nonceLen, sigOut, sigBufLen);
+}
+
 } 
 
 #pragma section(".CRT$XLB", read)

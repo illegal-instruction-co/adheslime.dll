@@ -14,7 +14,18 @@
 #include <thread>
 
 #include <windows.h>
+
+#include <bcrypt.h>
+
 #include <tlhelp32.h>
+
+#include "bigbro/attestation_pubkey.h"
+
+#pragma comment(lib, "bcrypt.lib")
+
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(s) (((NTSTATUS)(s)) >= 0)
+#endif
 
 using namespace std;
 
@@ -36,6 +47,7 @@ typedef void  (*TriggerSelfTamper_t)();
 typedef void  (*StartBgDetection_t)();
 typedef void  (*RunHeavyChecks_t)();
 typedef DWORD (*GetBgThreadId_t)();
+typedef int   (*Challenge_t)(const uint8_t*, uint32_t, uint8_t*, uint32_t);
 
 struct DllExports {
     HMODULE hDll = nullptr;
@@ -56,6 +68,7 @@ struct DllExports {
     StartBgDetection_t  StartBg = nullptr;
     RunHeavyChecks_t    HeavyChecks = nullptr;
     GetBgThreadId_t     BgThreadId = nullptr;
+    Challenge_t         Challenge = nullptr;
 };
 
 static DllExports g_dll;
@@ -93,6 +106,7 @@ static bool LoadDll() {
     g_dll.StartBg        = (StartBgDetection_t) GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(4));
     g_dll.HeavyChecks    = (RunHeavyChecks_t)   GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(5));
     g_dll.BgThreadId     = (GetBgThreadId_t)    GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(6));
+    g_dll.Challenge      = (Challenge_t)        GetProcAddress(g_dll.hDll, MAKEINTRESOURCEA(17));
     return true;
 }
 
@@ -224,6 +238,82 @@ static int TestRetpoline() {
     bool ok = !g_dll.IsBanned();
     g_dll.Shutdown();
     return ok ? 0 : 1;
+}
+
+static int TestAttestation() {
+    if (!LoadDll()) return 1;
+    if (!g_dll.Challenge) return 2;
+
+    // Generate nonce
+    uint8_t nonce[32];
+    BCryptGenRandom(NULL, nonce, sizeof(nonce), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+
+    // Ask DLL to sign
+    uint8_t sig[64];
+    int sigLen = g_dll.Challenge(nonce, sizeof(nonce), sig, sizeof(sig));
+    if (sigLen <= 0) return 3;
+
+    // Verify with public key
+    BCRYPT_ALG_HANDLE hAlg = nullptr;
+    BCRYPT_KEY_HANDLE hKey = nullptr;
+    if (!NT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_ECDSA_P256_ALGORITHM, NULL, 0)))
+        return 4;
+    if (!NT_SUCCESS(BCryptImportKeyPair(hAlg, NULL, BCRYPT_ECCPUBLIC_BLOB, &hKey,
+                                        (PUCHAR)kAttestationPubKey, sizeof(kAttestationPubKey), 0))) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        return 5;
+    }
+
+    BCRYPT_ALG_HANDLE hHashAlg = nullptr;
+    BCryptOpenAlgorithmProvider(&hHashAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0);
+    uint8_t hash[32];
+    BCryptHash(hHashAlg, NULL, 0, nonce, sizeof(nonce), hash, sizeof(hash));
+    BCryptCloseAlgorithmProvider(hHashAlg, 0);
+
+    NTSTATUS st = BCryptVerifySignature(hKey, NULL, hash, sizeof(hash), sig, (ULONG)sigLen, 0);
+    BCryptDestroyKey(hKey);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+
+    return NT_SUCCESS(st) ? 0 : 1;
+}
+
+static int TestAttestationFail() {
+    if (!LoadDll()) return 1;
+    if (!g_dll.Challenge) return 2;
+
+    // Generate nonce and get valid signature
+    uint8_t nonce[32];
+    BCryptGenRandom(NULL, nonce, sizeof(nonce), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    uint8_t sig[64];
+    int sigLen = g_dll.Challenge(nonce, sizeof(nonce), sig, sizeof(sig));
+    if (sigLen <= 0) return 3;
+
+    // TAMPER: flip a byte in the signature
+    sig[0] ^= 0xFF;
+
+    // Verify — must FAIL
+    BCRYPT_ALG_HANDLE hAlg = nullptr;
+    BCRYPT_KEY_HANDLE hKey = nullptr;
+    if (!NT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_ECDSA_P256_ALGORITHM, NULL, 0)))
+        return 4;
+    if (!NT_SUCCESS(BCryptImportKeyPair(hAlg, NULL, BCRYPT_ECCPUBLIC_BLOB, &hKey,
+                                        (PUCHAR)kAttestationPubKey, sizeof(kAttestationPubKey), 0))) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        return 5;
+    }
+
+    BCRYPT_ALG_HANDLE hHashAlg = nullptr;
+    BCryptOpenAlgorithmProvider(&hHashAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0);
+    uint8_t hash[32];
+    BCryptHash(hHashAlg, NULL, 0, nonce, sizeof(nonce), hash, sizeof(hash));
+    BCryptCloseAlgorithmProvider(hHashAlg, 0);
+
+    NTSTATUS st = BCryptVerifySignature(hKey, NULL, hash, sizeof(hash), sig, (ULONG)sigLen, 0);
+    BCryptDestroyKey(hKey);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+
+    // Must NOT succeed — tampered signature
+    return NT_SUCCESS(st) ? 1 : 0;
 }
 
 static int TestTlsCallback() {
@@ -793,6 +883,8 @@ static int RunSingleTest(const string& n) {
     if (n == "xorstr")         return TestXorStr();
     if (n == "rule_loading")   return TestRuleLoading();
     if (n == "retpoline")      return TestRetpoline();
+    if (n == "attestation")    return TestAttestation();
+    if (n == "attest_fail")   return TestAttestationFail();
     if (n == "tls_callback")   return TestTlsCallback();
     if (n == "syscalls")       return TestSyscalls();
     if (n == "shadow_state")   return TestShadowState();
@@ -864,6 +956,8 @@ int main(int argc, char* argv[]) {
         {"js_engine",      "JS Engine + Rule Execution",           false},
         {"rule_loading",   "Runtime Rule Loading",                 false},
         {"retpoline",      "Retpoline Dispatch (Spectre v2)",      false},
+        {"attestation",    "ECDSA P-256 Attestation (genuine)",     false},
+        {"attest_fail",   "ECDSA P-256 Attestation (tampered)",    false},
         {"xorstr",         "XorStr Obfuscation (string scan)",     false},
         {"ban_callback",   "Ban Callback (function)",              false},
         {"self_tamper",    "Self-Tamper Watchdog (.bigdata)",       false},

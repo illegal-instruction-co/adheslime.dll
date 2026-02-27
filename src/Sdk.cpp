@@ -3,6 +3,7 @@
 #include "Vfs.h"
 #include "Syscalls.h"
 #include "StealthImport.h"
+#include "Obfuscation.h"
 
 extern void RegisterCustomComponents(bigbro::ComponentRegistry& registry);
 
@@ -152,8 +153,6 @@ int SDK::Init(const Config& config) {
                     extern atomic<uint64_t> g_bgHeartbeat;
                     g_bgHeartbeat.fetch_add(1, memory_order_relaxed);
                     RunNativeChecks();
-                    RunScriptChecks();
-                    // Heavy checks every 3rd iteration (~6 sec)
                     if (++bgIteration % 3 == 0) RunHeavyChecks();
                     for (int i = 0; i < 20 && !g_bgStop; ++i)
                         this_thread::sleep_for(chrono::milliseconds(100));

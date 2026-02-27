@@ -15,6 +15,7 @@ add_library(bigbro SHARED
     src/Exports.cpp
     src/Syscalls.cpp
     src/CustomComponents.cpp
+    src/Attestation.cpp
     engine/duktape.c
     src/retpoline.asm
     src/syscalls.asm
@@ -32,21 +33,48 @@ target_link_libraries(bigbro PRIVATE ntdll bcrypt)
 # Host Application (Integration Demo)
 # ============================================================
 add_executable(host examples/Host.cpp)
+target_include_directories(host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(host PRIVATE bcrypt)
 
 # ============================================================
 # Tester Application (Validation Suite)
 # ============================================================
 add_executable(tester tests/Tester.cpp)
+target_include_directories(tester PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(tester PRIVATE bcrypt)
 
 # ============================================================
-# MSVC: CFG + lower warnings for Duktape C code
+# MSVC Compiler + Linker Hardening (anti-reverse-engineering)
 # ============================================================
 if(MSVC)
-    target_compile_options(bigbro PRIVATE /guard:cf)
-    target_link_options(bigbro PRIVATE /GUARD:CF)
+    # --- Release-only: aggressive optimization + obfuscation ---
+    target_compile_options(bigbro PRIVATE
+        $<$<CONFIG:Release>:
+            /GL             # Whole Program Optimization
+            /Ob3            # Maximum inlining
+            /Gw             # Global data optimization
+            /GS             # Buffer security checks
+            /Oy             # Omit frame pointer
+            /Oi             # Intrinsic functions
+        >
+    )
+
+    # --- Release linker flags ---
+    target_link_options(bigbro PRIVATE
+        $<$<CONFIG:Release>:
+            /LTCG                   # Link-Time Code Generation
+            /OPT:REF                # Remove unreferenced functions
+            /OPT:ICF                # Fold identical COMDATs
+            /DYNAMICBASE            # ASLR
+            /NXCOMPAT               # DEP
+            /HIGHENTROPYVA          # High entropy ASLR (64-bit)
+            /DEBUG:NONE             # Zero debug info
+        >
+    )
+
     set_source_files_properties(engine/duktape.c PROPERTIES COMPILE_FLAGS "/W1")
+
     # MASM can't create nested obj dirs when sources are in subdirs (src/)
-    # Create the output subdirectory before assembly
     add_custom_command(TARGET bigbro PRE_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "${CMAKE_CURRENT_BINARY_DIR}/bigbro.dir/$<CONFIG>/src"
@@ -89,3 +117,15 @@ add_custom_command(TARGET bigbro POST_BUILD
         $<TARGET_FILE_DIR:bigbro>/rules
     COMMENT "Copying detection rules (dev mode)..."
 )
+
+# Post-build PE obfuscation (erase toolchain fingerprints)
+# Non-fatal: if DLL is locked (e.g. by IDA), build still succeeds.
+# Re-run manually: python tools/obfuscate_pe.py build2/Release/bigbro.dll
+if(Python3_FOUND)
+    add_custom_command(TARGET bigbro POST_BUILD
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/obfuscate_pe.py
+            $<TARGET_FILE:bigbro> || (exit /b 0)
+        COMMENT "Applying PE obfuscation..."
+    )
+endif()

@@ -23,3 +23,4 @@ EXPORTS
     BigBro_ProtectVariable         @14 NONAME
     BigBro_UnprotectVariable       @15 NONAME
     BigBro_UpdateProtectedVariable @16 NONAME
+    BigBro_Challenge               @17 NONAME

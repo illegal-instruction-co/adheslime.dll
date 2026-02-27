@@ -1,6 +1,6 @@
 # bigbro.dll
 
-**Open-source anti-cheat SDK for game developers.** C++20. Single DLL. 18 native detections. Fiber-based execution. AES-256-GCM encrypted rule engine.
+**Open-source anti-cheat SDK for game developers.** C++20. Single DLL. 18 native detections. Fiber-based execution. AES-256-GCM encrypted rule engine. Ordinal-only exports.
 
 <p align="center">
     <img width="400" height="400" alt="image" src="https://github.com/illegal-instruction-co/bigbro.dll/blob/main/bigbro.png" />
@@ -13,18 +13,19 @@
 graph TB
     subgraph HOST["🎮 Game Process"]
         GAME["Game Loop"]
-        TICK["SDK::Tick()"]
-        INIT["SDK::Init()"]
-        SHUT["SDK::Shutdown()"]
-        COMP["Custom Components"]
+        LOAD["LoadLibrary + GetProcAddress"]
+        ATTEST["DLL Attestation<br/>ECDSA P-256 verify"]
+        TICK["BigBro_Tick()"]
     end
 
     subgraph SDK["🛡️ BigBro SDK Core"]
         direction TB
+        CAPI["C API — Ordinal-Only<br/>17 NONAME exports"]
         FIBER["Fiber Scheduler"]
         SHADOW["Shadow State<br/>AES-256-GCM"]
         PROTECTED["Protected Variables<br/>Tamper Detection"]
         REGISTRY["Component Registry"]
+        CUSTOM["CustomComponents.cpp<br/>User-defined detections"]
     end
 
     subgraph DETECT["🔍 Detection Engine"]
@@ -41,19 +42,19 @@ graph TB
         VFS["AES-256-GCM VFS<br/>Encrypted JS rules"]
         XORSTR["XorStr Obfuscation<br/>Compile-time encryption"]
         STEALTH["Stealth Imports<br/>PEB walk • manual EAT"]
+        ECDSA["DLL Attestation<br/>ECDSA P-256 challenge-response"]
     end
 
-    GAME --> TICK
-    TICK --> FIBER
+    GAME --> LOAD
+    LOAD --> ATTEST
+    ATTEST --> TICK
+    TICK --> CAPI --> FIBER
     FIBER --> DISPATCH
     DISPATCH --> NATIVE
     DISPATCH --> JS
-    INIT --> SHADOW
-    TICK --> SHADOW
-    TICK --> PROTECTED
-    INIT --> VFS
-    INIT --> REGISTRY
-    REGISTRY --> COMP
+    CAPI --> SHADOW
+    CAPI --> PROTECTED
+    REGISTRY --> CUSTOM
     NATIVE --> SYSCALL
     JS --> SYSCALL
     BG --> DISPATCH
@@ -125,12 +126,14 @@ graph LR
         XOR["XorStr<br/>Compile-time encryption"]
         OBF["Opaque Predicates<br/>Junk branches"]
         RET["Retpoline<br/>Spectre v2 mitigation"]
+        NONAME["NONAME Exports<br/>Zero symbol names in PE"]
     end
 
     subgraph L3["Layer 3: Runtime Integrity"]
         TEXT[".text SHA-256<br/>Code integrity"]
         DISP["Dispatch Table<br/>Hash + Protection"]
         IAT["IAT/EAT<br/>Hook detection"]
+        ATT["ECDSA P-256<br/>DLL attestation"]
     end
 
     subgraph L4["Layer 4: State Protection"]
@@ -159,8 +162,9 @@ graph LR
 
 ```mermaid
 graph TD
-    subgraph PUBLIC["📦 Public API"]
-        SDK_H["include/bigbro/Sdk.h<br/>C++20 API • Components • Config"]
+    subgraph PUBLIC["📦 Public API — Ordinal Only"]
+        SDK_H["include/bigbro/Sdk.h<br/>C API declarations"]
+        PUBKEY["attestation_pubkey.h<br/>ECDSA public key"]
     end
 
     subgraph INTERNAL["🔧 Internal Modules"]
@@ -170,7 +174,9 @@ graph TD
         VFS_M["Vfs.cpp<br/>AES-GCM VFS"]
         SDKC["Sdk.cpp<br/>Init • Tick • Fiber"]
         SYSC["Syscalls.cpp<br/>Shadow State • Protected Vars"]
-        EXP["Exports.cpp<br/>C exports • TLS • DllMain"]
+        EXP["Exports.cpp<br/>C API wrappers • TLS • DllMain"]
+        ATT["Attestation.cpp<br/>ECDSA P-256 signing"]
+        CUST["CustomComponents.cpp<br/>User-defined detections"]
     end
 
     subgraph ASM["⚡ Assembly"]
@@ -182,14 +188,16 @@ graph TD
         DUK["engine/duktape.c<br/>Duktape 2.7.0"]
         RULES["rules/*.js<br/>Detection scripts"]
         PACK["tools/pack_rules.py<br/>AES-GCM packer"]
+        KEYGEN["tools/gen_attestation_key.py<br/>ECDSA keypair generator"]
     end
 
     SDK_H --> COMMON
-    COMMON --> DET & JSENG & VFS_M & SDKC & SYSC & EXP
+    COMMON --> DET & JSENG & VFS_M & SDKC & SYSC & EXP & ATT
     DET --> RETPO & SYSCA
     JSENG --> DUK
     VFS_M --> RULES
     PACK --> RULES
+    KEYGEN --> ATT
 
     style PUBLIC fill:#0f3460,stroke:#533483,color:#e0e0e0
     style INTERNAL fill:#1a1a2e,stroke:#533483,color:#e0e0e0
@@ -201,35 +209,102 @@ graph TD
 
 ## Quick Start
 
-```cpp
-#include <bigbro/Sdk.h>
+The DLL exports **only ordinal numbers** — no C++ symbols. Load at runtime:
 
+```cpp
+#include <windows.h>
+#include <cstdio>
+#include "bigbro/attestation_pubkey.h"
+
+// Function pointer types
+typedef void (*SetBanCb_t)(void(*)(uint32_t, const char*));
+typedef int  (*Init_t)(uint32_t, const char*, const char*);
+typedef int  (*Tick_t)();
+typedef void (*Shutdown_t)();
+typedef int  (*Challenge_t)(const uint8_t*, uint32_t, uint8_t*, uint32_t);
+
+void OnBan(uint32_t code, const char* reason) {
+    printf("BANNED: 0x%X %s\n", code, reason);
+}
+
+int main() {
+    HMODULE hDll = LoadLibraryA("bigbro.dll");
+
+    // Resolve by ordinal
+    auto SetBanCb = (SetBanCb_t) GetProcAddress(hDll, MAKEINTRESOURCEA(12));
+    auto Init     = (Init_t)     GetProcAddress(hDll, MAKEINTRESOURCEA(7));
+    auto Tick     = (Tick_t)     GetProcAddress(hDll, MAKEINTRESOURCEA(8));
+    auto Shutdown = (Shutdown_t) GetProcAddress(hDll, MAKEINTRESOURCEA(9));
+
+    SetBanCb(OnBan);
+    Init(0, "your-key-here", nullptr);
+
+    int health = 100;
+    auto Protect = (void(*)(const char*, const void*, uint32_t))
+        GetProcAddress(hDll, MAKEINTRESOURCEA(14));
+    Protect("health", &health, sizeof(health));
+
+    while (running) {
+        int result = Tick();  // 0 = clean, 1 = banned
+    }
+    Shutdown();
+    FreeLibrary(hDll);
+}
+```
+
+### Custom Components
+
+Since the DLL has no C++ exports, custom detection components are compiled into the DLL from source. Edit `src/CustomComponents.cpp`:
+
+```cpp
 class SpeedHackDetector final : public bigbro::Component {
 public:
     const char* GetName() const override { return "MyGame::SpeedHack"; }
     void OnTick() override { /* your detection logic */ }
 };
 
-int main() {
-    auto& sdk = bigbro::SDK::Get();
-    sdk.Components().Register(std::make_shared<SpeedHackDetector>());
-
-    sdk.Init({
-        .encryptionKey = "your-key-here",
-        .onBan = [](const bigbro::BanEvent& e) {
-            printf("BANNED: 0x%X %s\n", e.code, e.reason.c_str());
-        },
-    });
-
-    int health = 100;
-    sdk.ProtectVariable("health", &health, sizeof(health));
-
-    while (running) {
-        int result = sdk.Tick();  // 0 = clean, 1 = banned
-    }
-    sdk.Shutdown();
+void RegisterCustomComponents(bigbro::ComponentRegistry& registry) {
+    registry.Register(std::make_shared<SpeedHackDetector>());
 }
 ```
+
+## C API Ordinal Map
+
+| Ordinal | Function | Description |
+|---------|----------|-------------|
+| @1 | `RunFullSuite` | Legacy: init + tick |
+| @2 | `IsUserBanned` | Legacy: ban check |
+| @3 | `TriggerSelfTamper` | Testing: trigger tamper |
+| @4 | `StartBackgroundDetection` | Start bg thread |
+| @5 | `RunHeavyChecksExport` | Manual-map + ntdll scans |
+| @6 | `GetBgThreadId` | Get bg thread ID |
+| @7 | **`BigBro_Init`** | Init with flags/key/rules |
+| @8 | **`BigBro_Tick`** | Run detection cycle |
+| @9 | **`BigBro_Shutdown`** | Cleanup |
+| @10 | **`BigBro_IsBanned`** | Ban status |
+| @11 | **`BigBro_LoadRule`** | Load JS rule file |
+| @12 | **`BigBro_SetBanCallback`** | Set ban callback |
+| @13 | **`BigBro_SetLogCallback`** | Set log callback |
+| @14 | **`BigBro_ProtectVariable`** | Register protected var |
+| @15 | **`BigBro_UnprotectVariable`** | Remove protected var |
+| @16 | **`BigBro_UpdateProtectedVariable`** | Sync shadow copy |
+| @17 | **`BigBro_Challenge`** | ECDSA P-256 attestation |
+
+## DLL Attestation (ECDSA P-256)
+
+Prevents DLL swapping on disk. Host verifies the loaded DLL is genuine:
+
+```
+Host                           bigbro.dll
+  |-- random nonce ----------->|
+  |                            | sign(SHA256(nonce), private_key)
+  |<-- ECDSA signature --------|
+  | verify(signature, pubkey)
+  | PASS = genuine ✅
+  | FAIL = swapped ❌
+```
+
+Regenerate keypair: `python tools/gen_attestation_key.py src/attestation_key.gen.h include/bigbro/attestation_pubkey.h`
 
 ## Detection Routines (18 + 3 heavy)
 
@@ -264,22 +339,23 @@ int main() {
 
 ## Test Coverage
 
-**37/37 passing** — every detection has paired positive + negative tests:
+**38/38 passing** — every detection has paired positive + negative tests:
 
 | Category | Count | Description |
 |---|---|---|
-| SDK Core | 7 | Init, Shutdown, Tick, Components, Registry |
+| SDK Core | 7 | Init, Shutdown, Tick, Exports, C API |
 | Security Infra | 6 | XorStr, Retpoline, TLS, Syscalls, Shadow State |
+| DLL Attestation | 2 | Genuine DLL pass + tampered signature fail |
 | Protected Vars | 2 | API + tamper detection |
 | JS Engine | 4 | Engine, bindings, rule loading, ban propagation |
 | Attack Simulation (**ban+**) | 10 | Real attack scenarios that must trigger ban |
 | False Positive (**clean**) | 5 | Legitimate scenarios that must NOT trigger ban |
-| Syscall Whitelist | 3 | Block dangerous + allow safe + JS bindings |
+| Syscall Whitelist | 2 | Block dangerous + allow safe |
 
 ## Build
 
 ```bash
-cmake -B build -G "Visual Studio 17 2022" -A x64 \
+cmake -B build -G "Visual Studio 18 2026" -A x64 \
       -DBIGBRO_PACK_KEY="your-encryption-key"
 cmake --build build --config Release
 
@@ -288,6 +364,8 @@ cd build/Release && tester.exe
 ```
 
 Requires Python 3 + `pycryptodome` for rule encryption.
+
+Regenerate attestation keys: `python tools/gen_attestation_key.py src/attestation_key.gen.h include/bigbro/attestation_pubkey.h` (requires `pip install cryptography`).
 
 ## License
 
