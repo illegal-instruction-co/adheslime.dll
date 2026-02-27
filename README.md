@@ -2,8 +2,9 @@
 
 **Open-source anti-cheat SDK for game developers.** C++20. Single DLL. 18 native detections. Fiber-based execution. AES-256-GCM encrypted rule engine.
 
-<img width="500" height="500" alt="image" src="https://github.com/user-attachments/assets/072fdf52-c2ac-4f6c-b7bf-fec3cd75cd90" />
-
+<p align="center">
+    <img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/072fdf52-c2ac-4f6c-b7bf-fec3cd75cd90" />
+</p>
 ---
 
 ## Architecture Overview
