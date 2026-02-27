@@ -2,6 +2,9 @@
 
 **Open-source anti-cheat SDK for game developers.** C++20. Single DLL. 18 native detections. Fiber-based execution. AES-256-GCM encrypted rule engine.
 
+<p align="center">
+    <img width="400" height="400" alt="image" src="https://github.com/illegal-instruction-co/bigbro.dll/blob/main/bigbro.png" />
+</p>
 ---
 
 ## Architecture Overview
